@@ -1,13 +1,3 @@
-# Copy this into .github/workflows/gcp-audit.yml in your repo.
-#
-# Setup:
-#   1. Add a repo secret named GCP_SA_JSON containing the JSON of a GCP
-#      service account with read-only audit permissions on the target project.
-#   2. Trigger via the Actions tab → "GCP Audit" → Run workflow.
-#
-# Pin the action to a tag or commit SHA for reproducibility, e.g.
-#   uses: stackql/stackql-audit-action@v0.1
-
 name: GCP Audit
 
 on:
