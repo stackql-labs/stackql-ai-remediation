@@ -44,7 +44,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: stackql/stackql-audit-action@v0.2
+      - uses: stackql/stackql-audit-action@v0.3
         with:
           # GCP
           gcp-project-id: ${{ inputs.gcp-project-id }}
