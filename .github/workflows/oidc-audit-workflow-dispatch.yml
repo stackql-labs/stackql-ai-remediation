@@ -18,7 +18,7 @@ on:
       target:
         description: Space-separated deep targets
         required: false
-        default: s3 aws-regions gcp-org azure-org
+        default: s3 aws-regions gcp-org azure-org entra
       max-nodes:
         description: 'Budget: max org-nodes visited (-1 = unlimited)'
         required: false
