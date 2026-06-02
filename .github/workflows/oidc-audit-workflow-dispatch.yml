@@ -31,7 +31,7 @@ jobs:
       id-token: write       # required: GitHub OIDC token issuance
       contents: read
     steps:
-      - uses: stackql/stackql-audit-action/actions/oidc@v0.4
+      - uses: stackql/stackql-audit-action/actions/oidc@v0.5
         with:
           target: ${{ inputs.target }}
           # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
