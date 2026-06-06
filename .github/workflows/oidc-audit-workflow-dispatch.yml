@@ -64,8 +64,8 @@ jobs:
         env:
           STACKQL_OBS_AUDIT_UPLOAD_KEY: ${{ secrets.STACKQL_OBS_AUDIT_UPLOAD_KEY }}
         run: |
-          ls deep-audit-data-streams/*
-          _summary="$(cat deep-audit-data-streams/summary.json)"
+          ls -d "$PWD"/deep-audit-data-streams/*
+          _summary="$(cat $GITHUB_WORKSPACE/deep-audit-data-streams/summary.json)"
           if [ -z "$_summary" ]; then
             echo "No summary data found; skipping upload."
             exit 0
