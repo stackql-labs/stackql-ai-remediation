@@ -23,6 +23,10 @@ on:
         description: 'Budget: max org-nodes visited (-1 = unlimited)'
         required: false
         default: '-1'
+      send-summary:
+        description: Send summary data to StackqQL (requires STACKQL_OBS_AUDIT_UPLOAD_KEY secret)
+        required: false
+        default: 'true'
 
 jobs:
   oidc-audit:
@@ -50,3 +54,58 @@ jobs:
           max-nodes: ${{ inputs.max-nodes }}
           timeout-seconds: '1800'
           upload-logs: 'true'
+
+      - uses: actions/download-artifact@v4
+        id: download-data-streams
+        with:
+          name: deep-audit-data-streams
+
+      - name: Process data streams
+        env:
+          STACKQL_OBS_AUDIT_UPLOAD_KEY: ${{ secrets.STACKQL_OBS_AUDIT_UPLOAD_KEY }}
+        run: |
+          ls deep-audit-data-streams/*
+          _summary="$(cat deep-audit-data-streams/summary.json)"
+          if [ -z "$_summary" ]; then
+            echo "No summary data found; skipping upload."
+            exit 0
+          fi
+          echo "Summary data: $_summary"
+          _payload='{
+            "timestamp": '"$(date +%s)"',
+            "audit": {
+              "type": "cross_cloud_oidc",
+              "target": {
+                "enterprise": {
+                  "name": "StackqQL Studios PTY LTD",
+                  "short_name": "stackql"
+                },
+                "hierarchy": {
+                  "google": {
+                    "org_id": "'"${{ inputs.google-org-id }}"'"
+                  },
+                  "aws": {
+                    "region": "'"${{ inputs.aws-region }}"'"
+                  },
+                  "azure": {
+                    "mgmt_group": "'"${{ inputs.azure-mgmt-group }}"'"
+                  }
+                }
+              },
+              "data": '"${_summary}"'
+            }
+          }'
+          echo "#### Payload ####"
+          echo
+          echo "$_payload" | jq .
+          echo
+          echo "#### ####"
+          if [ "${{ inputs.send-summary }}" = 'true' ]; then
+            echo "Uploading summary data to StackqQL..."
+          else
+            echo "send-summary input is false; skipping upload."
+            exit 0
+          fi
+          curl -X POST https://stackql-backend-dev-01.fly.dev/api/audit/ingest \
+          -H "X-API-KEY: ${STACKQL_OBS_AUDIT_UPLOAD_KEY}" -H "Content-Type: application/json" \
+          -d "${_payload}"
