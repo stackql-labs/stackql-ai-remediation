@@ -71,7 +71,6 @@ jobs:
             echo "No summary data found; skipping upload."
             exit 0
           fi
-          echo "Summary data: $_summary"
           _payload='{
             "timestamp": '"$(date +%s)"',
             "audit": {
