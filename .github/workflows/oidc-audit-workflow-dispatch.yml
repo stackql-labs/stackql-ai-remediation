@@ -59,6 +59,7 @@ jobs:
         id: download-data-streams
         with:
           name: deep-audit-data-streams
+          path: deep-audit-data-streams
 
       - name: Process data streams
         env:
