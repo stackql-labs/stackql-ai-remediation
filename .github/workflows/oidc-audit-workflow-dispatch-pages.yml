@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Run StackQL OIDC audit
-        uses: stackql/stackql-audit-action/actions/oidc@v0.6.1
+        uses: stackql/stackql-audit-action/actions/oidc@v0.7.1
         with:
           target: ${{ env.AUDIT_TARGET }}
 
