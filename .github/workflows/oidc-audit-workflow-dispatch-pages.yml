@@ -35,7 +35,7 @@ on:
         default: 'true'
 
 jobs:
-  oidc-audit:
+  oidc-audit-pages:
     runs-on: ubuntu-latest
     permissions:
       id-token: write       # required: GitHub OIDC token issuance
@@ -195,39 +195,16 @@ jobs:
             }' > "${workdir}/audit/diff-latest.json"
 
           jq -s '
+            def findings: [.audit.data | .. | objects | select(.severity | type == "string")];
+            def count($s): findings | map(select(.severity | ascii_upcase == $s)) | length;
             sort_by(.timestamp)
             | map({
                 run_id,
                 timestamp,
-                iso_time: (.run_id | gsub("-"; ":")? // .),
-                total_findings: (
-                  .audit.data.total_findings
-                  // .audit.data.totals.findings
-                  // .audit.data.summary.total_findings
-                  // .audit.data.findings_total
-                  // null
-                ),
-                high: (
-                  .audit.data.high
-                  // .audit.data.totals.high
-                  // .audit.data.severity.high
-                  // .audit.data.severities.high
-                  // null
-                ),
-                medium: (
-                  .audit.data.medium
-                  // .audit.data.totals.medium
-                  // .audit.data.severity.medium
-                  // .audit.data.severities.medium
-                  // null
-                ),
-                low: (
-                  .audit.data.low
-                  // .audit.data.totals.low
-                  // .audit.data.severity.low
-                  // .audit.data.severities.low
-                  // null
-                )
+                total_findings: (findings | length),
+                high: count("HIGH"),
+                medium: count("MEDIUM"),
+                low: count("LOW")
               })
             | .[-120:]
           ' "${workdir}"/audit/runs/*.json > "${workdir}/audit/trend-30d.json"
@@ -256,6 +233,14 @@ jobs:
               th { color: #aab4d4; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
               pre { overflow: auto; background: rgba(0,0,0,0.25); padding: 12px; border-radius: 12px; max-height: 420px; }
               a { color: #bfdbfe; }
+              code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+              .sev { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+              .sev-high { background: #7f1d1d; color: #fee2e2; }
+              .sev-medium { background: #78350f; color: #fed7aa; }
+              .sev-low { background: #1e3a8a; color: #bfdbfe; }
+              .sev-none { background: rgba(255,255,255,0.1); color: #aab4d4; }
+              .ctx { color: #aab4d4; font-size: 12px; }
+              .empty { color: #aab4d4; padding: 16px 8px; }
               @media (max-width: 820px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } header { align-items: flex-start; flex-direction: column; } }
               @media print { body { background: white; color: black; } button { display: none; } .card, .panel { box-shadow: none; border-color: #ddd; background: white; } .sub, .label, th { color: #555; } a { color: black; } }
             </style>
@@ -279,6 +264,10 @@ jobs:
 
               <section class="panels">
                 <div class="panel">
+                  <h2>Findings</h2>
+                  <table id="findings"><thead><tr><th>Target</th><th>Name</th><th>Severity</th><th>Context</th></tr></thead><tbody></tbody></table>
+                </div>
+                <div class="panel">
                   <h2>30-run trend</h2>
                   <table id="trend"><thead><tr><th>Run</th><th>Total</th><th>High</th><th>Medium</th><th>Low</th></tr></thead><tbody></tbody></table>
                 </div>
@@ -291,32 +280,77 @@ jobs:
             </main>
 
             <script>
-              const pick = (obj, paths) => {
-                for (const path of paths) {
-                  const value = path.split('.').reduce((acc, key) => acc && acc[key], obj);
-                  if (value !== undefined && value !== null) return value;
-                }
-                return null;
+              const n = (value) => value === null || value === undefined ? '—' : value;
+              const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+              const sevClass = (s) => {
+                const u = String(s || '').toUpperCase();
+                if (u === 'HIGH') return 'sev-high';
+                if (u === 'MEDIUM') return 'sev-medium';
+                if (u === 'LOW') return 'sev-low';
+                return 'sev-none';
               };
 
-              const n = (value) => value === null || value === undefined ? '—' : value;
+              const collectFindings = (root) => {
+                const out = [];
+                const walk = (node, target) => {
+                  if (Array.isArray(node)) { node.forEach(v => walk(v, target)); return; }
+                  if (!node || typeof node !== 'object') return;
+                  if (typeof node.severity === 'string') out.push({ target, ...node });
+                  for (const v of Object.values(node)) walk(v, target);
+                };
+                for (const [target, value] of Object.entries(root || {})) walk(value, target);
+                return out;
+              };
 
               async function main() {
                 const latest = await fetch('audit/latest.json').then(r => r.json());
                 const trend = await fetch('audit/trend-30d.json').then(r => r.json()).catch(() => []);
                 const data = latest.audit?.data || {};
 
+                const findings = collectFindings(data);
+                const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+                for (const f of findings) {
+                  const u = String(f.severity || '').toUpperCase();
+                  if (u in counts) counts[u]++;
+                }
+
                 document.getElementById('run-meta').textContent = `${latest.audit?.type || 'audit'} · run ${latest.run_id || 'unknown'} · ${latest.workflow?.repository || ''}`;
-                document.getElementById('total').textContent = n(pick(data, ['total_findings', 'totals.findings', 'summary.total_findings', 'findings_total']));
-                document.getElementById('high').textContent = n(pick(data, ['high', 'totals.high', 'severity.high', 'severities.high']));
-                document.getElementById('medium').textContent = n(pick(data, ['medium', 'totals.medium', 'severity.medium', 'severities.medium']));
-                document.getElementById('low').textContent = n(pick(data, ['low', 'totals.low', 'severity.low', 'severities.low']));
+                document.getElementById('total').textContent = findings.length;
+                document.getElementById('high').textContent = counts.HIGH;
+                document.getElementById('medium').textContent = counts.MEDIUM;
+                document.getElementById('low').textContent = counts.LOW;
                 document.getElementById('raw').textContent = JSON.stringify(data, null, 2);
+
+                const ftbody = document.querySelector('#findings tbody');
+                if (findings.length === 0) {
+                  ftbody.innerHTML = `<tr><td colspan="4" class="empty">No findings.</td></tr>`;
+                } else {
+                  const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+                  const sorted = findings.slice().sort((a, b) => {
+                    const ra = severityRank[String(a.severity || '').toUpperCase()] ?? 9;
+                    const rb = severityRank[String(b.severity || '').toUpperCase()] ?? 9;
+                    if (ra !== rb) return ra - rb;
+                    return String(a.target).localeCompare(String(b.target));
+                  });
+                  ftbody.innerHTML = sorted.map(f => {
+                    const { target, severity, name, ...rest } = f;
+                    const ctx = Object.entries(rest)
+                      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+                      .map(([k, v]) => `${esc(k)}: ${esc(typeof v === 'object' ? JSON.stringify(v) : v)}`)
+                      .join(' · ');
+                    return `<tr>
+                      <td><code>${esc(target)}</code></td>
+                      <td>${esc(name || '—')}</td>
+                      <td><span class="sev ${sevClass(severity)}">${esc(String(severity || '—').toUpperCase())}</span></td>
+                      <td><span class="ctx">${ctx || '—'}</span></td>
+                    </tr>`;
+                  }).join('');
+                }
 
                 const tbody = document.querySelector('#trend tbody');
                 tbody.innerHTML = trend.slice(-30).reverse().map(row => `
                   <tr>
-                    <td>${row.run_id || '—'}</td>
+                    <td>${esc(row.run_id || '—')}</td>
                     <td>${n(row.total_findings)}</td>
                     <td>${n(row.high)}</td>
                     <td>${n(row.medium)}</td>

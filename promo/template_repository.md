@@ -1,0 +1,2 @@
+
+StackQL Audit Templates let teams run deterministic cross-cloud security audits directly from GitHub Actions using OIDC — without storing cloud credentials. A scheduled workflow interrogates AWS, GCP and Azure using provider-native APIs, generates structured findings and trends, then republishes a live static findings page via GitHub Pages. The result is a forkable, self-updating cloud posture site with audit history, downloadable artifacts and reproducible outputs, built entirely from GitHub-native primitives with zero backend infrastructure required.
