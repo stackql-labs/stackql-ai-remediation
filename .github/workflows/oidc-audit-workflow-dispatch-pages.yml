@@ -1,4 +1,4 @@
-name: Cloud Audit Pasges (OIDC)
+name: Cloud Audit Pages (OIDC)
 
 on:
   schedule:
