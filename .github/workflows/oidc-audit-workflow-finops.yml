@@ -6,7 +6,7 @@ name: Cloud FinOps Audit (OIDC)
 
 on:
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '15 */6 * * *'
   push:
     tags:
       - 'audit-finops-oidc*'
