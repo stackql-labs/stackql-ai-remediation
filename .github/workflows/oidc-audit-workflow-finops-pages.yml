@@ -63,7 +63,7 @@ jobs:
 
     steps:
       - name: Run StackQL FinOps audit
-        uses: stackql/stackql-audit-action/actions/oidc@v0.8
+        uses: stackql/stackql-audit-action/actions/oidc@v0.8.3
         with:
           target: ${{ env.AUDIT_TARGET }}
           stackql-version: 'latest'
