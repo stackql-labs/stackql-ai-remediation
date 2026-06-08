@@ -106,7 +106,7 @@ jobs:
           echo "$_payload" | jq .
           echo
           echo "#### ####"
-          if [ "${{ inputs.send-summary }}" = 'true' ]; then
+          if [ "${{ inputs.send-summary || 'true' }}" = 'true' ]; then
             echo "Uploading summary data to StackqQL..."
           else
             echo "send-summary input is false; skipping upload."
