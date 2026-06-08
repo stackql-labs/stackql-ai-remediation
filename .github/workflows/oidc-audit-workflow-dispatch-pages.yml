@@ -55,6 +55,7 @@ jobs:
         uses: stackql/stackql-audit-action/actions/oidc@v0.7.2
         with:
           target: ${{ env.AUDIT_TARGET }}
+          stackql-version: 'latest'
 
           # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
           aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}

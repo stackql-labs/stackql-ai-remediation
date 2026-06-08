@@ -39,21 +39,22 @@ jobs:
     steps:
       - uses: stackql/stackql-audit-action/actions/oidc@v0.7.2
         with:
-          target: ${{ inputs.target }}
+          target: ${{ inputs.target || 's3 aws-regions gcp-org azure-org entra' }}
+          stackql-version: 'latest'
           # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
           aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
-          aws-region: ${{ inputs.aws-region }}
+          aws-region: ${{ inputs.aws-region || 'us-east-1' }}
           # GCP (Workload Identity Federation -> SA impersonation)
           gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
-          google-org-id: ${{ inputs.google-org-id }}
+          google-org-id: ${{ inputs.google-org-id || '141318256085' }}
           # Azure (federated identity, no client secret)
           azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
           azure-subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
           azure-mgmt-group: ${{ inputs.azure-mgmt-group }}
           # Budget + output
-          max-nodes: ${{ inputs.max-nodes }}
+          max-nodes: ${{ inputs.max-nodes || '-1' }}
           timeout-seconds: '1800'
           upload-logs: 'true'
 
