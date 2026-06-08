@@ -3,6 +3,9 @@ name: Cloud Audit Pages (OIDC)
 on:
   schedule:
     - cron: '0 */6 * * *'
+  push:
+    tags:
+      - 'audit-pages-oidc*'
   workflow_dispatch:
     inputs:
       google-org-id:
