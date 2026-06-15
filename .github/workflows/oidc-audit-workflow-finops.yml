@@ -40,7 +40,7 @@ jobs:
       id-token: write       # required: GitHub OIDC token issuance
       contents: read
     steps:
-      - uses: stackql/stackql-audit-action/actions/oidc@v0.9.1   # pin a release that includes the finops-* targets
+      - uses: stackql/stackql-audit-action/actions/oidc@v0.9   # pin a release that includes the finops-* targets
         with:
           target: ${{ inputs.target || 'finops-aws finops-gcp finops-azure' }}
           # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
