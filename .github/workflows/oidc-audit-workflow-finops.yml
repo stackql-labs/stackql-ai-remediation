@@ -49,7 +49,7 @@ jobs:
           # GCP (Workload Identity Federation -> SA impersonation)
           gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
-          google-org-id: ${{ inputs.google-org-id }}
+          google-org-id: ${{ inputs.google-org-id || secrets.GCP_ORG_ID || '' }}
           # Azure (federated identity, no client secret — finops needs no Graph)
           azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
