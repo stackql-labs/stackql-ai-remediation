@@ -1,0 +1,102 @@
+name: Preflight FinOps Remediation PR (OIDC)
+
+# Runs when a remediation PR is opened/updated. Read-only re-verification of
+# the original finding via the upstream preflight-oidc action; result is
+# summarised in plain language by Claude and posted as a sticky PR comment.
+
+on:
+  pull_request:
+    paths:
+      - 'remediations/proposed/**'
+
+permissions:
+  id-token: write       # OIDC token issuance
+  contents: read        # read PR head
+  pull-requests: write  # sticky comment
+
+concurrency:
+  group: preflight-finops-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0    # need base..head diff
+
+      - name: Locate changed preflight.sql files
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(
+            git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- \
+              'remediations/proposed/**/preflight.sql'
+          )
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no preflight.sql added/modified in this PR"
+            exit 0
+          fi
+          glob="{$(IFS=,; echo "${files[*]}")}"
+          echo "glob=$glob" >> "$GITHUB_OUTPUT"
+          echo "has_files=true" >> "$GITHUB_OUTPUT"
+          printf '::notice::will preflight: %s\n' "${files[@]}"
+
+      - name: Run preflight (OIDC, read-only)
+        if: steps.changed.outputs.has_files == 'true'
+        id: preflight
+        uses: stackql/stackql-audit-action/actions/preflight-oidc@v0.11
+        with:
+          glob: ${{ steps.changed.outputs.glob }}
+          aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
+
+      - name: Plain-language summary
+        if: steps.changed.outputs.has_files == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Read ${{ steps.preflight.outputs.results-json }} — an array of
+            per-file preflight execution results from a stackql action.
+
+            For each result, also read the sibling files in the same directory:
+            - finding.json     (the original finding the PR is remediating)
+            - rationale.md     (the proposer's plain-language rationale)
+            (Use the `file` path in each result entry to locate the directory.)
+
+            Write to $RUNNER_TEMP/preflight-summary.md a single markdown
+            comment, max 6 sentences total:
+            - State PASS or NEEDS-REVIEW for the PR overall (NEEDS-REVIEW if
+              any single file's preflight no longer confirms the original
+              finding — e.g. resource state has changed, row count is zero
+              when expected non-zero, etc.).
+            - For each finding, one short sentence in plain language a
+              non-engineer would understand: what the resource is, whether
+              it still matches the original waste/violation, and the
+              expected outcome if the PR is merged.
+
+            Do not modify any files outside $RUNNER_TEMP. Do not post comments.
+
+      - name: Post sticky PR comment
+        if: steps.changed.outputs.has_files == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preflight-finops
+          path: ${{ runner.temp }}/preflight-summary.md
+
+      - name: Fail the check if preflight did not pass
+        if: steps.changed.outputs.has_files == 'true' && steps.preflight.outputs.pass != 'true'
+        run: |
+          echo "::error::Preflight did not pass — merging this PR will not produce the intended remediation. See sticky comment for the plain-language breakdown."
+          exit 1

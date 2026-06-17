@@ -1,0 +1,127 @@
+name: Apply FinOps Remediation on merge (static creds)
+
+# Fires when a remediation PR is merged to main (or any push to main that
+# touches remediations/proposed/**). Re-runs preflight via OIDC (read-only)
+# and, if it passes, executes the remediation.sql against the cloud using
+# static credentials scoped to mutate. Applied directories are git-moved
+# from remediations/proposed/ to remediations/applied/ to leave an audit
+# trail and prevent re-application.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'remediations/proposed/**'
+
+permissions:
+  id-token: write       # OIDC for the preflight re-check
+  contents: write       # commit the proposed -> applied rename
+
+concurrency:
+  group: apply-finops-main
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect newly merged remediation directories
+        id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER:  ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          mapfile -t rem < <(
+            git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- \
+              'remediations/proposed/**/remediation.sql'
+          )
+          if [ "${#rem[@]}" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no new remediation.sql in this push"
+            exit 0
+          fi
+
+          # Sibling preflight.sql for each remediation.sql
+          mapfile -t pre < <(printf '%s\n' "${rem[@]}" | sed 's|remediation\.sql$|preflight.sql|')
+
+          pre_glob="{$(IFS=,; echo "${pre[*]}")}"
+          rem_glob="{$(IFS=,; echo "${rem[*]}")}"
+          echo "preflight_glob=$pre_glob"     >> "$GITHUB_OUTPUT"
+          echo "remediation_glob=$rem_glob"   >> "$GITHUB_OUTPUT"
+          echo "found=true"                   >> "$GITHUB_OUTPUT"
+
+          # File list for the post-apply move step
+          printf '%s\n' "${rem[@]}" > "$RUNNER_TEMP/remediation-files.txt"
+          printf '::notice::will apply: %s\n' "${rem[@]}"
+
+      - name: Re-verify with preflight (OIDC, read-only)
+        if: steps.detect.outputs.found == 'true'
+        id: preflight
+        uses: stackql/stackql-audit-action/actions/preflight-oidc@v0.11
+        with:
+          glob: ${{ steps.detect.outputs.preflight_glob }}
+          aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
+
+      - name: Abort if preflight did not pass on merge
+        if: steps.detect.outputs.found == 'true' && steps.preflight.outputs.pass != 'true'
+        run: |
+          echo "::error::Preflight failed on merge — refusing to mutate. Investigate drift since PR was approved."
+          exit 1
+
+      - name: Apply (static creds, mutating)
+        if: steps.detect.outputs.found == 'true'
+        id: apply
+        uses: stackql/stackql-audit-action/actions/apply@v0.11
+        with:
+          glob: ${{ steps.detect.outputs.remediation_glob }}
+          dry-run: 'false'
+          require-preflight-pass: 'true'
+          preflight-results: ${{ steps.preflight.outputs.results-json }}
+          aws-access-key-id:     ${{ secrets.STACKQL_REMEDIATE_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.STACKQL_REMEDIATE_AWS_SECRET_ACCESS_KEY }}
+          aws-region:            us-east-1
+          gcp-credentials:       ${{ secrets.STACKQL_REMEDIATE_GCP_SA_KEY_JSON }}
+          azure-tenant-id:       ${{ secrets.STACKQL_REMEDIATE_AZURE_TENANT_ID }}
+          azure-client-id:       ${{ secrets.STACKQL_REMEDIATE_AZURE_CLIENT_ID }}
+          azure-client-secret:   ${{ secrets.STACKQL_REMEDIATE_AZURE_CLIENT_SECRET }}
+
+      - name: Record outcome and move proposed -> applied
+        if: steps.detect.outputs.found == 'true' && steps.apply.outputs.pass == 'true'
+        env:
+          REM_FILES: ${{ runner.temp }}/remediation-files.txt
+          APPLY_RESULTS: ${{ steps.apply.outputs.results-json }}
+          APPLY_SUMMARY: ${{ steps.apply.outputs.summary-md }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          while IFS= read -r f; do
+            src_dir="$(dirname "$f")"
+            dst_dir="${src_dir/remediations\/proposed/remediations\/applied}"
+            mkdir -p "$(dirname "$dst_dir")"
+            git mv "$src_dir" "$dst_dir"
+            cp "$APPLY_RESULTS" "$dst_dir/apply-results.json"
+            [ -f "$APPLY_SUMMARY" ] && cp "$APPLY_SUMMARY" "$dst_dir/apply-summary.md" || true
+            git add "$dst_dir"
+          done < "$REM_FILES"
+
+          if git diff --cached --quiet; then
+            echo "::warning::nothing to commit after apply"
+            exit 0
+          fi
+
+          git commit -m "Apply remediation: move proposed -> applied for $GITHUB_SHA"
+          git push origin HEAD:main
