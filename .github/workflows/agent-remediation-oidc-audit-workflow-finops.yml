@@ -99,6 +99,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
+          allowed_bots: 'github-actions'
           # Allow file-writing tools (empty claude_args = read-only => no files written).
           claude_args: "--allowedTools Read,Write,Edit,Bash --permission-mode acceptEdits"
           show_full_output: true     # surface every tool call in the job log

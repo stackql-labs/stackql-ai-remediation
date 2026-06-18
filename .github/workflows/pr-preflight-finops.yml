@@ -66,6 +66,7 @@ jobs:
         if: steps.changed.outputs.has_files == 'true'
         uses: anthropics/claude-code-action@v1
         with:
+          allowed_bots: 'github-actions'
           prompt: |
             Read ${{ steps.preflight.outputs.results-json }} — an array of
             per-file preflight execution results from a stackql action.
