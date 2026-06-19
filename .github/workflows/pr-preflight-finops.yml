@@ -65,6 +65,8 @@ jobs:
       - name: Plain-language summary
         if: steps.changed.outputs.has_files == 'true'
         uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           allowed_bots: 'github-actions'
           prompt: |
