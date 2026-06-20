@@ -93,45 +93,18 @@ jobs:
             echo "::notice::findings.json present but empty — nothing to remediate"
           fi
 
-      - name: Generate one remediation proposal per finding
+      - name: Generate one remediation proposal per finding (templated SQL)
         if: steps.findings.outputs.has_findings == 'true'
-        uses: anthropics/claude-code-action@v1
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        with:
-          allowed_bots: 'github-actions'
-          # Allow file-writing tools (empty claude_args = read-only => no files written).
-          claude_args: "--allowedTools Read,Write,Edit,Bash --permission-mode acceptEdits"
-          show_full_output: true     # surface every tool call in the job log
-          display_report: true       # summary in the step summary
-          prompt: |
-            Read ${{ steps.findings.outputs.findings_path }}. Shape:
-              { "findings": [
-                  { run_id, target, provider, check_id, check_file, check_name,
-                    query, severity, region, fields: { ... estimated_monthly_usd } },
-                  ...
-              ] }
-
-            For each finding (index i, 0-based) create a directory:
-              remediations/proposed/${{ github.run_id }}-${{ github.run_attempt }}/<i>-<check_id>-<resource_id>/
-
-            where <resource_id> is the most specific identifier present in
-            .fields — try volumeId, then publicIp, address, name (use the
-            first that exists). Sanitise the slug to [a-zA-Z0-9._-].
-
-            In each directory write exactly these four files:
-              - finding.json     — the single object .findings[i] verbatim
-              - preflight.sql    — stackql SELECT(s) that re-verify the
-                                   resource still meets the original check
-                                   criteria immediately before any mutation
-              - remediation.sql  — stackql DELETE/UPDATE that disposes the
-                                   resource (one statement set per finding)
-              - rationale.md     — 1–2 paragraphs: what is being removed,
-                                   why it is safe, what the preflight
-                                   verifies, estimated monthly saving
-
-            Do not modify any files outside remediations/proposed/.
-            Do not execute remediation. Do not open PRs.
+          FINDINGS_JSON: ${{ steps.findings.outputs.findings_path }}
+          RUN_ID:        ${{ github.run_id }}
+          RUN_ATTEMPT:   ${{ github.run_attempt }}
+        # Deterministic generator — no LLM in the SQL path. Templates per
+        # check_id live in cicd/scripts/generate_proposals.py; edit there
+        # to add or fix a check's preflight/remediation shape.
+        run: |
+          set -euo pipefail
+          python3 cicd/scripts/generate_proposals.py
 
       - name: Open one PR per proposal
         if: steps.findings.outputs.has_findings == 'true'

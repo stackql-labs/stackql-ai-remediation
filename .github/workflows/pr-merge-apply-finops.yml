@@ -116,10 +116,13 @@ jobs:
             }
 
       # --- apply per finding via the vendor CLI -------------------------
-      # Dispatch by .check_id from finding.json. Each branch runs the
-      # canonical CLI delete for that resource type. Outcomes are recorded
-      # in a per-run results JSON file alongside the per-finding dir so the
-      # PR audit trail captures what happened.
+      # Two paths, in order of preference:
+      #   1. finding.suggested_remediation when tool == "cli" — execute the
+      #      upstream-supplied command verbatim, but only if its first token
+      #      is in the allowlist (aws | gcloud | az).
+      #   2. fallback: hardcoded dispatch by check_id below.
+      # Outcomes land in a per-run results JSON alongside the per-finding
+      # dir so the PR audit trail captures what happened.
       - name: Apply (vendor CLI dispatch)
         if: steps.detect.outputs.found == 'true'
         id: apply
@@ -148,6 +151,40 @@ jobs:
             stdout_log="$dir/_apply.stdout.log"
             stderr_log="$dir/_apply.stderr.log"
 
+            # 1) upstream-supplied CLI command — taken when .command is set
+            #    AND its first token is in the allowlist. Tool name on the
+            #    finding (stackql / aws-cli / az-cli / gcloud / ...) is
+            #    informational; the gate is the binary actually invoked.
+            sr_tool="$(jq -r '.suggested_remediation.tool // empty' "$finding")"
+            sr_cmd="$(jq  -r '.suggested_remediation.command // empty' "$finding")"
+            if [ -n "$sr_cmd" ]; then
+              bin="${sr_cmd%% *}"
+              case "$bin" in
+                aws|gcloud|az)
+                  bash -c "$sr_cmd" >"$stdout_log" 2>"$stderr_log"
+                  rc=$?
+                  ;;
+                *)
+                  echo "refusing $bin (allowed: aws gcloud az)" >"$stderr_log"
+                  rc=126
+                  ;;
+              esac
+              if [ "$rc" -eq 0 ]; then
+                applied=$((applied+1)); echo "::notice::applied (cli, tool=$sr_tool) $check_id at $dir"
+                jq -n --arg dir "$dir" --arg cid "$check_id" --arg tool "$sr_tool" --arg cmd "$sr_cmd" \
+                  '{dir:$dir, check_id:$cid, status:"applied", source:"suggested_remediation.command", tool:$tool, command:$cmd, exit_code:0}' \
+                  >> "$RESULTS_JSON.tmp"
+              else
+                failed=$((failed+1))
+                echo "::error::CLI failed ($rc) for $check_id at $dir — see $stderr_log"
+                jq -n --arg dir "$dir" --arg cid "$check_id" --arg tool "$sr_tool" --arg cmd "$sr_cmd" --argjson rc "$rc" \
+                  '{dir:$dir, check_id:$cid, status:"failed", source:"suggested_remediation.command", tool:$tool, command:$cmd, exit_code:$rc}' \
+                  >> "$RESULTS_JSON.tmp"
+              fi
+              continue
+            fi
+
+            # 2) fallback: per-check_id hardcoded dispatch
             case "$check_id" in
               aws-finops-unattached-volume)
                 vol="$(jq -r '.fields.volumeId' "$finding")"
