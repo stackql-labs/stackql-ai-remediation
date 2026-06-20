@@ -43,7 +43,13 @@ jobs:
             echo "::notice::no preflight.sql added/modified in this PR"
             exit 0
           fi
-          glob="{$(IFS=,; echo "${files[*]}")}"
+          # Brace-expansion {a,b,c} only resolves when there's a comma; a
+          # single-item {x} is treated as a literal and matches nothing.
+          if [ "${#files[@]}" -eq 1 ]; then
+            glob="${files[0]}"
+          else
+            glob="{$(IFS=,; echo "${files[*]}")}"
+          fi
           echo "glob=$glob" >> "$GITHUB_OUTPUT"
           echo "has_files=true" >> "$GITHUB_OUTPUT"
           printf '::notice::will preflight: %s\n' "${files[@]}"
