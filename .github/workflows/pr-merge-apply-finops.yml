@@ -2,10 +2,14 @@ name: Apply FinOps Remediation on merge (static creds)
 
 # Fires when a remediation PR is merged to main (or any push to main that
 # touches remediations/proposed/**). Re-runs preflight via OIDC (read-only)
-# and, if it passes, executes the remediation.sql against the cloud using
-# static credentials scoped to mutate. Applied directories are git-moved
-# from remediations/proposed/ to remediations/applied/ to leave an audit
-# trail and prevent re-application.
+# and, if it passes, performs the mutation per finding using the cloud
+# vendor CLI (aws / gcloud / az) — not stackql — because the Cloud-Control
+# / ARM CLIs are the direct, well-supported path for deletes. Applied
+# directories are git-moved from remediations/proposed/ to
+# remediations/applied/ to leave an audit trail and prevent re-application.
+#
+# Mutation credentials are read from SANDBOX_* repo secrets, populated
+# via cicd/scripts/replicate_to_gh_secrets.sh.
 
 on:
   push:
@@ -80,29 +84,163 @@ jobs:
           echo "::error::Preflight failed on merge — refusing to mutate. Investigate drift since PR was approved."
           exit 1
 
-      - name: Apply (static creds, mutating)
+      # --- mutation credentials (static, SANDBOX_*) ---------------------
+      - name: Configure AWS creds (static, SANDBOX)
+        if: steps.detect.outputs.found == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
+          aws-region:            us-east-1
+
+      - name: Configure GCP creds (static, SANDBOX)
+        if: steps.detect.outputs.found == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+
+      - name: Install gcloud
+        if: steps.detect.outputs.found == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Azure creds (static, SANDBOX)
+        if: steps.detect.outputs.found == 'true'
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
+              "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
+              "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
+              "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
+            }
+
+      # --- apply per finding via the vendor CLI -------------------------
+      # Dispatch by .check_id from finding.json. Each branch runs the
+      # canonical CLI delete for that resource type. Outcomes are recorded
+      # in a per-run results JSON file alongside the per-finding dir so the
+      # PR audit trail captures what happened.
+      - name: Apply (vendor CLI dispatch)
         if: steps.detect.outputs.found == 'true'
         id: apply
-        uses: stackql/stackql-audit-action/actions/apply@v0.11
-        with:
-          glob: ${{ steps.detect.outputs.remediation_glob }}
-          dry-run: 'false'
-          require-preflight-pass: 'true'
-          preflight-results: ${{ steps.preflight.outputs.results-json }}
-          aws-access-key-id:     ${{ secrets.STACKQL_REMEDIATE_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.STACKQL_REMEDIATE_AWS_SECRET_ACCESS_KEY }}
-          aws-region:            us-east-1
-          gcp-credentials:       ${{ secrets.STACKQL_REMEDIATE_GCP_SA_KEY_JSON }}
-          azure-tenant-id:       ${{ secrets.STACKQL_REMEDIATE_AZURE_TENANT_ID }}
-          azure-client-id:       ${{ secrets.STACKQL_REMEDIATE_AZURE_CLIENT_ID }}
-          azure-client-secret:   ${{ secrets.STACKQL_REMEDIATE_AZURE_CLIENT_SECRET }}
+        env:
+          REM_FILES: ${{ runner.temp }}/remediation-files.txt
+          RESULTS_JSON: ${{ runner.temp }}/apply-results.json
+        run: |
+          set -uo pipefail
+
+          : > "$RESULTS_JSON.tmp"
+          applied=0
+          failed=0
+          skipped=0
+
+          while IFS= read -r f; do
+            dir="$(dirname "$f")"
+            finding="$dir/finding.json"
+            if [ ! -f "$finding" ]; then
+              echo "::warning::no finding.json in $dir, skipping"
+              skipped=$((skipped+1))
+              continue
+            fi
+            check_id="$(jq -r '.check_id' "$finding")"
+            region="$(jq -r '.region // .fields.region // ""' "$finding")"
+
+            stdout_log="$dir/_apply.stdout.log"
+            stderr_log="$dir/_apply.stderr.log"
+
+            case "$check_id" in
+              aws-finops-unattached-volume)
+                vol="$(jq -r '.fields.volumeId' "$finding")"
+                aws ec2 delete-volume --volume-id "$vol" --region "$region" >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              aws-finops-unassociated-eip)
+                alloc="$(jq -r '.fields.allocationId // .fields.AllocationId // empty' "$finding")"
+                if [ -z "$alloc" ]; then
+                  echo "no allocationId in finding" >"$stderr_log"; rc=2
+                else
+                  aws ec2 release-address --allocation-id "$alloc" --region "$region" >"$stdout_log" 2>"$stderr_log"
+                  rc=$?
+                fi
+                ;;
+              aws-finops-zero-vms-policy)
+                iid="$(jq -r '.fields.instanceId' "$finding")"
+                aws ec2 terminate-instances --instance-ids "$iid" --region "$region" >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              gcp-finops-unattached-disk|gcp-finops-unattached-disks)
+                name="$(jq -r '.fields.name' "$finding")"
+                zone="$(jq -r '.fields.zone' "$finding")"
+                gcloud compute disks delete "$name" --zone "$zone" --quiet >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              gcp-finops-unused-ips|gcp-finops-unused-address)
+                name="$(jq -r '.fields.name // .fields.address' "$finding")"
+                gcloud compute addresses delete "$name" --region "$region" --quiet >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              gcp-finops-zero-vms-policy)
+                name="$(jq -r '.fields.name' "$finding")"
+                zone="$(jq -r '.fields.zone' "$finding")"
+                gcloud compute instances delete "$name" --zone "$zone" --quiet >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              azure-finops-unattached-disk|azure-finops-unattached-disks)
+                rid="$(jq -r '.fields.id' "$finding")"
+                az disk delete --ids "$rid" --yes >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              azure-finops-unassociated-ip|azure-finops-unassociated-ips)
+                rid="$(jq -r '.fields.id' "$finding")"
+                az network public-ip delete --ids "$rid" >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              azure-finops-zero-vms-policy)
+                rid="$(jq -r '.fields.id' "$finding")"
+                az vm delete --ids "$rid" --yes >"$stdout_log" 2>"$stderr_log"
+                rc=$?
+                ;;
+              *)
+                echo "::warning::no CLI mapping for check_id=$check_id ($dir); skipping"
+                skipped=$((skipped+1))
+                jq -n --arg dir "$dir" --arg cid "$check_id" \
+                  '{dir:$dir, check_id:$cid, status:"skipped", reason:"no CLI mapping"}' >> "$RESULTS_JSON.tmp"
+                continue
+                ;;
+            esac
+
+            if [ "$rc" -eq 0 ]; then
+              applied=$((applied+1))
+              status="applied"
+              echo "::notice::applied $check_id at $dir"
+            else
+              failed=$((failed+1))
+              status="failed"
+              echo "::error::CLI failed ($rc) for $check_id at $dir — see $stderr_log"
+            fi
+            jq -n --arg dir "$dir" --arg cid "$check_id" --arg status "$status" --argjson rc "$rc" \
+              '{dir:$dir, check_id:$cid, status:$status, exit_code:$rc}' >> "$RESULTS_JSON.tmp"
+          done < "$REM_FILES"
+
+          jq -s '.' "$RESULTS_JSON.tmp" > "$RESULTS_JSON"
+          rm -f "$RESULTS_JSON.tmp"
+
+          echo "applied=$applied" >> "$GITHUB_OUTPUT"
+          echo "failed=$failed"   >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "results_json=$RESULTS_JSON" >> "$GITHUB_OUTPUT"
+          if [ "$failed" -eq 0 ]; then
+            echo "pass=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "pass=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - name: Record outcome and move proposed -> applied
         if: steps.detect.outputs.found == 'true' && steps.apply.outputs.pass == 'true'
         env:
-          REM_FILES: ${{ runner.temp }}/remediation-files.txt
-          APPLY_RESULTS: ${{ steps.apply.outputs.results-json }}
-          APPLY_SUMMARY: ${{ steps.apply.outputs.summary-md }}
+          REM_FILES:     ${{ runner.temp }}/remediation-files.txt
+          APPLY_RESULTS: ${{ steps.apply.outputs.results_json }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -113,10 +251,17 @@ jobs:
             dst_dir="${src_dir/remediations\/proposed/remediations\/applied}"
             mkdir -p "$(dirname "$dst_dir")"
             git mv "$src_dir" "$dst_dir"
-            cp "$APPLY_RESULTS" "$dst_dir/apply-results.json"
-            [ -f "$APPLY_SUMMARY" ] && cp "$APPLY_SUMMARY" "$dst_dir/apply-summary.md" || true
+            # Per-finding apply logs (stdout/stderr) were written into the
+            # src_dir during the apply step — they move along with git mv.
             git add "$dst_dir"
           done < "$REM_FILES"
+
+          # Stash the consolidated results.json at the run root for traceability.
+          run_root="$(awk -F/ '{print $1"/"$2"/"$3}' < "$REM_FILES" | head -1)"
+          run_root="${run_root/remediations\/proposed/remediations\/applied}"
+          mkdir -p "$run_root"
+          cp "$APPLY_RESULTS" "$run_root/apply-results.json"
+          git add "$run_root/apply-results.json"
 
           if git diff --cached --quiet; then
             echo "::warning::nothing to commit after apply"
