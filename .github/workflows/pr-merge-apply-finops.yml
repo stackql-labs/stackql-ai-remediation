@@ -142,11 +142,11 @@ jobs:
       #     aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
       #     aws-region:            us-east-1
 
-      - name: Configure GCP creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+      # - name: Configure GCP creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
 
       - name: Install gcloud
         if: steps.detect.outputs.found == 'true'
