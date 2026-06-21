@@ -88,6 +88,7 @@ jobs:
           tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
           client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
           subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
+          allow-no-subscriptions: true
 
       # --- PREFLIGHT (vendor CLI per finding) ---------------------------
       - name: Preflight (vendor CLI dispatch)
