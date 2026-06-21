@@ -152,17 +152,17 @@ jobs:
         if: steps.detect.outputs.found == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Azure creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
-        uses: azure/login@v2
-        with:
-          creds: |
-            {
-              "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
-              "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
-              "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
-              "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
-            }
+      # - name: Configure Azure creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: azure/login@v2
+      #   with:
+      #     creds: |
+      #       {
+      #         "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
+      #         "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
+      #         "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
+      #         "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
+      #       }
 
       # --- install stackql (mutating creds set by the SANDBOX auth steps) ---
       - name: Install stackql + providers
