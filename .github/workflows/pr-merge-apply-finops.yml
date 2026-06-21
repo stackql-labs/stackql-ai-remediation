@@ -30,6 +30,14 @@ concurrency:
 
 jobs:
   apply:
+    env:
+      GOOGLE_CREDENTIALS:   ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+      AZURE_TENANT_ID:      ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
+      AWS_ACCESS_KEY_ID:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,28 +80,6 @@ jobs:
           # File list for the post-apply move step
           printf '%s\n' "${rem[@]}" > "$RUNNER_TEMP/remediation-files.txt"
           printf '::notice::will apply: %s\n' "${rem[@]}"
-
-      # --- preflight (OIDC, read-only) — same pattern as pr-preflight-finops.yml
-      - if: steps.detect.outputs.found == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - if: steps.detect.outputs.found == 'true'
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
-          token_format: access_token
-
-      - if: steps.detect.outputs.found == 'true'
-        uses: azure/login@v2
-        with:
-          tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
-          client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
-          subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
-          allow-no-subscriptions: true
 
       - name: Preflight (inline stackql, OIDC)
         if: steps.detect.outputs.found == 'true'
