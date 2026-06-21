@@ -99,7 +99,7 @@ jobs:
             [ -f "$f" ] || continue
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
-            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
+            out="$(stackql exec --output json "$q" 2>&1)"
             rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
             if [ "${rows:-0}" -gt 0 ]; then
               echo "::group::PASS $f ($rows row)"
@@ -294,7 +294,7 @@ jobs:
             [ -f "$f" ] || continue
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
-            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
+            out="$(stackql exec --output json "$q" 2>&1)"
             rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
             # Post-apply: mutation happened pre-merge; resource should be gone.
             if [ "${rows:-0}" -eq 0 ]; then
