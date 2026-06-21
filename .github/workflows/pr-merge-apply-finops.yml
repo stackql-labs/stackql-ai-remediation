@@ -115,20 +115,37 @@ jobs:
               "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
             }
 
-      # --- apply per finding via the vendor CLI -------------------------
-      # Two paths, in order of preference:
-      #   1. finding.suggested_remediation when tool == "cli" — execute the
-      #      upstream-supplied command verbatim, but only if its first token
-      #      is in the allowlist (aws | gcloud | az).
-      #   2. fallback: hardcoded dispatch by check_id below.
-      # Outcomes land in a per-run results JSON alongside the per-finding
-      # dir so the PR audit trail captures what happened.
-      - name: Apply (vendor CLI dispatch)
+      # --- install stackql (mutating creds set by the SANDBOX auth steps) ---
+      - name: Install stackql + providers
+        if: steps.detect.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o stackql.zip
+          unzip -q stackql.zip && chmod +x stackql
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP:$PATH"
+          stackql exec "registry pull aws;"
+          stackql exec "registry pull google;"
+          stackql exec "registry pull azure;"
+
+      # --- apply per finding via stackql DELETE -------------------------
+      # Per finding, run suggested_remediation.sql_query verbatim via stackql.
+      # Auth: AWS via env vars (configure-aws-credentials), GCP via the SA
+      # JSON env var, Azure via the SP env vars. Nothing else; no CLI.
+      - name: Apply (stackql DELETE)
         if: steps.detect.outputs.found == 'true'
         id: apply
         env:
           REM_FILES: ${{ runner.temp }}/remediation-files.txt
           RESULTS_JSON: ${{ runner.temp }}/apply-results.json
+          # SANDBOX static creds — stackql picks AWS up from env automatically,
+          # GCP from the application-default credentials file, Azure from SP env.
+          GOOGLE_CREDENTIALS:   ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+          AZURE_TENANT_ID:      ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
         run: |
           set -uo pipefail
 
@@ -146,93 +163,40 @@ jobs:
               continue
             fi
             check_id="$(jq -r '.check_id' "$finding")"
-            region="$(jq -r '.region // .fields.region // ""' "$finding")"
-
+            sql="$(jq -r '.suggested_remediation.sql_query // empty' "$finding")"
             stdout_log="$dir/_apply.stdout.log"
             stderr_log="$dir/_apply.stderr.log"
 
-            # 1) upstream-supplied CLI command — taken when .command is set
-            #    AND its first token is in the allowlist. Tool name on the
-            #    finding (stackql / aws-cli / az-cli / gcloud / ...) is
-            #    informational; the gate is the binary actually invoked.
-            sr_tool="$(jq -r '.suggested_remediation.tool // empty' "$finding")"
-            sr_cmd="$(jq  -r '.suggested_remediation.command // empty' "$finding")"
-            if [ -n "$sr_cmd" ]; then
-              bin="${sr_cmd%% *}"
-              case "$bin" in
-                aws|gcloud|az)
-                  bash -c "$sr_cmd" >"$stdout_log" 2>"$stderr_log"
-                  rc=$?
-                  ;;
-                *)
-                  echo "refusing $bin (allowed: aws gcloud az)" >"$stderr_log"
-                  rc=126
-                  ;;
-              esac
-              if [ "$rc" -eq 0 ]; then
-                applied=$((applied+1)); echo "::notice::applied (cli, tool=$sr_tool) $check_id at $dir"
-                jq -n --arg dir "$dir" --arg cid "$check_id" --arg tool "$sr_tool" --arg cmd "$sr_cmd" \
-                  '{dir:$dir, check_id:$cid, status:"applied", source:"suggested_remediation.command", tool:$tool, command:$cmd, exit_code:0}' \
-                  >> "$RESULTS_JSON.tmp"
-              else
-                failed=$((failed+1))
-                echo "::error::CLI failed ($rc) for $check_id at $dir — see $stderr_log"
-                jq -n --arg dir "$dir" --arg cid "$check_id" --arg tool "$sr_tool" --arg cmd "$sr_cmd" --argjson rc "$rc" \
-                  '{dir:$dir, check_id:$cid, status:"failed", source:"suggested_remediation.command", tool:$tool, command:$cmd, exit_code:$rc}' \
-                  >> "$RESULTS_JSON.tmp"
-              fi
+            if [ -z "$sql" ]; then
+              echo "::warning::no suggested_remediation.sql_query for $check_id at $dir; skipping"
+              skipped=$((skipped+1))
+              jq -n --arg dir "$dir" --arg cid "$check_id" \
+                '{dir:$dir, check_id:$cid, status:"skipped", reason:"no suggested_remediation.sql_query"}' \
+                >> "$RESULTS_JSON.tmp"
               continue
             fi
 
-            # 2) fallback: per-check_id hardcoded dispatch
+            stackql exec --output json "$sql" >"$stdout_log" 2>"$stderr_log"
+            rc=$?
+
+            if [ "$rc" -eq 0 ]; then
+              applied=$((applied+1)); echo "::notice::applied (stackql) $check_id at $dir"
+              jq -n --arg dir "$dir" --arg cid "$check_id" --arg sql "$sql" \
+                '{dir:$dir, check_id:$cid, status:"applied", source:"suggested_remediation.sql_query", sql_query:$sql, exit_code:0}' \
+                >> "$RESULTS_JSON.tmp"
+            else
+              failed=$((failed+1))
+              echo "::error::stackql failed ($rc) for $check_id at $dir — see $stderr_log"
+              jq -n --arg dir "$dir" --arg cid "$check_id" --arg sql "$sql" --argjson rc "$rc" \
+                '{dir:$dir, check_id:$cid, status:"failed", source:"suggested_remediation.sql_query", sql_query:$sql, exit_code:$rc}' \
+                >> "$RESULTS_JSON.tmp"
+            fi
+            continue
+
+            # legacy per-check_id dispatch — retained only as dead code in case
+            # the upstream stops shipping suggested_remediation.sql_query.
             case "$check_id" in
-              aws-finops-unattached-volume)
-                vol="$(jq -r '.fields.volumeId' "$finding")"
-                aws ec2 delete-volume --volume-id "$vol" --region "$region" >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              aws-finops-unassociated-eip)
-                alloc="$(jq -r '.fields.allocationId // .fields.AllocationId // empty' "$finding")"
-                if [ -z "$alloc" ]; then
-                  echo "no allocationId in finding" >"$stderr_log"; rc=2
-                else
-                  aws ec2 release-address --allocation-id "$alloc" --region "$region" >"$stdout_log" 2>"$stderr_log"
-                  rc=$?
-                fi
-                ;;
-              aws-finops-zero-vms-policy)
-                iid="$(jq -r '.fields.instanceId' "$finding")"
-                aws ec2 terminate-instances --instance-ids "$iid" --region "$region" >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              gcp-finops-unattached-disk|gcp-finops-unattached-disks)
-                name="$(jq -r '.fields.name' "$finding")"
-                zone="$(jq -r '.fields.zone' "$finding")"
-                gcloud compute disks delete "$name" --zone "$zone" --quiet >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              gcp-finops-unused-ips|gcp-finops-unused-address)
-                name="$(jq -r '.fields.name // .fields.address' "$finding")"
-                gcloud compute addresses delete "$name" --region "$region" --quiet >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              gcp-finops-zero-vms-policy)
-                name="$(jq -r '.fields.name' "$finding")"
-                zone="$(jq -r '.fields.zone' "$finding")"
-                gcloud compute instances delete "$name" --zone "$zone" --quiet >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              azure-finops-unattached-disk|azure-finops-unattached-disks)
-                rid="$(jq -r '.fields.id' "$finding")"
-                az disk delete --ids "$rid" --yes >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              azure-finops-unassociated-ip|azure-finops-unassociated-ips)
-                rid="$(jq -r '.fields.id' "$finding")"
-                az network public-ip delete --ids "$rid" >"$stdout_log" 2>"$stderr_log"
-                rc=$?
-                ;;
-              azure-finops-zero-vms-policy)
+              never)
                 rid="$(jq -r '.fields.id' "$finding")"
                 az vm delete --ids "$rid" --yes >"$stdout_log" 2>"$stderr_log"
                 rc=$?

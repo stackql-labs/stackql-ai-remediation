@@ -1,12 +1,12 @@
-name: Preflight FinOps Remediation PR (vendor CLI, OIDC)
+name: Preflight FinOps Remediation PR (stackql, OIDC)
 
-# Runs when a remediation PR is opened/updated. Per finding, calls the
-# vendor CLI (aws / gcloud / az) directly to re-verify the resource is
-# still in the state the audit flagged. No stackql in this path — the
-# stackql preflight was returning ghost 0-row results we couldn't trace.
-# Vendor CLIs are the source of truth.
+# Runs when a remediation PR is opened/updated. Per finding, executes the
+# stackql preflight_query supplied by the audit upstream
+# (suggested_remediation.preflight_query). Auth + install mirror the audit's
+# own oidc composite action verbatim so the preflight sees what the audit
+# saw — same stackql binary, same auth bridge, same env.
 #
-# Auth: federated (OIDC) read-only into the audit role / SA / SP.
+# Pass criterion per finding: stackql returns >= 1 row.
 
 on:
   pull_request:
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0    # need base..head diff
+          fetch-depth: 0
 
       - name: Locate finding directories changed in this PR
         id: changed
@@ -42,16 +42,12 @@ jobs:
             git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- \
               'remediations/proposed/**/finding.json'
           )
-          # Fall back to preflight.sql siblings if the PR didn't touch
-          # finding.json directly (shouldn't happen in our flow, defensive).
           if [ "${#files[@]}" -eq 0 ]; then
-            mapfile -t prefiles < <(
+            mapfile -t pre < <(
               git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- \
                 'remediations/proposed/**/preflight.sql'
             )
-            for p in "${prefiles[@]}"; do
-              files+=("$(dirname "$p")/finding.json")
-            done
+            for p in "${pre[@]}"; do files+=("$(dirname "$p")/finding.json"); done
           fi
           if [ "${#files[@]}" -eq 0 ]; then
             echo "has_files=false" >> "$GITHUB_OUTPUT"
@@ -62,9 +58,11 @@ jobs:
           echo "has_files=true" >> "$GITHUB_OUTPUT"
           printf '::notice::will preflight: %s\n' "${files[@]}"
 
-      # --- AUTH (OIDC, read-only) ---------------------------------------
+      # --- AUTH (OIDC, read-only) — mirrors actions/oidc auth steps -----
       - name: AWS OIDC
         if: steps.changed.outputs.has_files == 'true'
+        id: aws_auth
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
@@ -72,17 +70,18 @@ jobs:
 
       - name: GCP OIDC
         if: steps.changed.outputs.has_files == 'true'
+        id: gcp_auth
+        continue-on-error: true
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
-
-      - name: Install gcloud
-        if: steps.changed.outputs.has_files == 'true'
-        uses: google-github-actions/setup-gcloud@v2
+          token_format: access_token
 
       - name: Azure OIDC
         if: steps.changed.outputs.has_files == 'true'
+        id: azure_auth
+        continue-on-error: true
         uses: azure/login@v2
         with:
           tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
@@ -90,197 +89,117 @@ jobs:
           subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
           allow-no-subscriptions: true
 
-      # --- PREFLIGHT (vendor CLI per finding) ---------------------------
-      - name: Preflight (vendor CLI dispatch)
+      # --- INSTALL stackql + providers — mirrors actions/oidc install ---
+      - name: Install stackql + providers
+        if: steps.changed.outputs.has_files == 'true'
+        env:
+          AWS_AUTH_OK:   ${{ steps.aws_auth.outcome == 'success' }}
+          GCP_AUTH_OK:   ${{ steps.gcp_auth.outcome == 'success' }}
+          AZURE_AUTH_OK: ${{ steps.azure_auth.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o stackql.zip
+          unzip -q stackql.zip && chmod +x stackql
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP:$PATH"
+
+          pull() { stackql exec "registry pull $1;"; }
+          [ "$AWS_AUTH_OK"   = "true" ] && pull aws
+          [ "$GCP_AUTH_OK"   = "true" ] && pull google
+          [ "$AZURE_AUTH_OK" = "true" ] && { pull azure; pull entra_id; }
+          echo "::notice::stackql installed; providers pulled"
+
+      # --- BRIDGE federated sessions to stackql ------------------------
+      - name: Preflight (stackql per finding)
         if: steps.changed.outputs.has_files == 'true'
         id: preflight
         env:
           FINDING_FILES: ${{ runner.temp }}/finding-files.txt
           SUMMARY_MD:    ${{ runner.temp }}/preflight-summary.md
+          AWS_AUTH_OK:   ${{ steps.aws_auth.outcome == 'success' }}
+          GCP_AUTH_OK:   ${{ steps.gcp_auth.outcome == 'success' }}
+          AZURE_AUTH_OK: ${{ steps.azure_auth.outcome == 'success' }}
         run: |
           set -uo pipefail
+
+          # Build the same --auth JSON the audit's oidc composite builds:
+          # AWS uses env vars (no --auth entry); GCP/Azure/entra_id use bearer tokens.
+          auth=()
+          if [ "$GCP_AUTH_OK" = "true" ]; then
+            export GCP_ACCESS_TOKEN="${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+            if [ -z "$GCP_ACCESS_TOKEN" ] && [ -f "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+              # Fall back to extracting an access token via gcloud if not exported.
+              export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token 2>/dev/null || true)"
+            fi
+            [ -n "$GCP_ACCESS_TOKEN" ] && auth+=('"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"}')
+          fi
+          if [ "$AZURE_AUTH_OK" = "true" ]; then
+            export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>/dev/null || true)"
+            export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv 2>/dev/null || true)"
+            [ -n "$AZURE_ARM_TOKEN"   ] && auth+=('"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"}')
+            [ -n "$AZURE_GRAPH_TOKEN" ] && auth+=('"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}')
+          fi
+          if [ "${#auth[@]}" -gt 0 ]; then
+            IFS=','; STACKQL_AUTH="{${auth[*]}}"; unset IFS
+          else
+            STACKQL_AUTH=""
+          fi
+          echo "::notice::stackql auth keys = ${auth[*]:-(none)} (AWS via env vars)"
+
           : > "$SUMMARY_MD"
           pass_total=0; fail_total=0; skip_total=0
           overall="PASS"
 
-          echo "# Preflight — vendor CLI re-verification" >> "$SUMMARY_MD"
-          echo "" >> "$SUMMARY_MD"
-          echo "| status | check | resource | region | detail |" >> "$SUMMARY_MD"
-          echo "| --- | --- | --- | --- | --- |" >> "$SUMMARY_MD"
+          {
+            echo "# Preflight — stackql per finding"
+            echo
+            echo "| status | check | resource | region | rows | detail |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+          } > "$SUMMARY_MD"
 
           while IFS= read -r f; do
             [ -f "$f" ] || { echo "::warning::missing $f"; continue; }
             cid="$(jq -r '.check_id' "$f")"
             region="$(jq -r '.region // .fields.region // ""' "$f")"
-            status_word="SKIP"
-            detail=""
-            rc=0
-
-            case "$cid" in
-              aws-finops-unattached-volume)
-                vol="$(jq -r '.fields.volumeId' "$f")"
-                resource="$vol"
-                json="$(aws ec2 describe-volumes --region "$region" --volume-ids "$vol" --output json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="AWS error: $(echo "$json" | head -1)"
+            resource="$(jq -r '.fields.volumeId // .fields.instanceId // .fields.allocationId // .fields.publicIp // .fields.address // .fields.name // .fields.id // "?"' "$f")"
+            q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
+            if [ -z "$q" ]; then
+              status_word="SKIP"; detail="no preflight_query on finding"; rows=0
+            else
+              # Run stackql exec with the same args shape as audit.run_stackql.
+              if [ -n "$STACKQL_AUTH" ]; then
+                out="$(stackql exec --auth "$STACKQL_AUTH" --output json "$q" 2>"$RUNNER_TEMP/_err")"
+              else
+                out="$(stackql exec --output json "$q" 2>"$RUNNER_TEMP/_err")"
+              fi
+              rc=$?
+              rows=0
+              if [ "$rc" -ne 0 ]; then
+                status_word="FAIL"; detail="stackql exit $rc: $(head -1 "$RUNNER_TEMP/_err")"
+              else
+                rows=$(printf '%s' "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+                if [ "$rows" -gt 0 ]; then
+                  status_word="PASS"; detail="returned $rows row(s)"
                 else
-                  state="$(echo "$json" | jq -r '.Volumes[0].State // empty')"
-                  if [ "$state" = "available" ]; then
-                    status_word="PASS"; detail="status=available"
-                  else
-                    status_word="FAIL"; detail="status=${state:-missing} (expected available)"
-                  fi
+                  status_word="FAIL"; detail="0 rows — drift, perms, or upstream SQL wrong"
                 fi
-                ;;
-              aws-finops-zero-vms-policy)
-                iid="$(jq -r '.fields.instanceId' "$f")"
-                resource="$iid"
-                json="$(aws ec2 describe-instances --region "$region" --instance-ids "$iid" --output json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="AWS error: $(echo "$json" | head -1)"
-                else
-                  state="$(echo "$json" | jq -r '.Reservations[0].Instances[0].State.Name // empty')"
-                  if [ -n "$state" ] && [ "$state" != "terminated" ]; then
-                    status_word="PASS"; detail="state=$state"
-                  else
-                    status_word="FAIL"; detail="state=${state:-missing} (expected non-terminated)"
-                  fi
-                fi
-                ;;
-              aws-finops-unassociated-eip)
-                alloc="$(jq -r '.fields.allocationId // .fields.AllocationId // empty' "$f")"
-                resource="${alloc:-?}"
-                if [ -z "$alloc" ]; then
-                  status_word="FAIL"; detail="no allocationId in finding"
-                else
-                  json="$(aws ec2 describe-addresses --region "$region" --allocation-ids "$alloc" --output json 2>&1)"
-                  rc=$?
-                  if [ $rc -ne 0 ]; then
-                    status_word="FAIL"; detail="AWS error: $(echo "$json" | head -1)"
-                  else
-                    assoc="$(echo "$json" | jq -r '.Addresses[0].AssociationId // empty')"
-                    if [ -z "$assoc" ]; then
-                      status_word="PASS"; detail="still unassociated"
-                    else
-                      status_word="FAIL"; detail="now associated ($assoc)"
-                    fi
-                  fi
-                fi
-                ;;
-              gcp-finops-unattached-disk|gcp-finops-unattached-disks)
-                name="$(jq -r '.fields.name' "$f")"
-                zone="$(jq -r '.fields.zone' "$f")"
-                resource="$name"
-                json="$(gcloud compute disks describe "$name" --zone "$zone" --format=json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="gcloud error: $(echo "$json" | head -1)"
-                else
-                  users="$(echo "$json" | jq -r '(.users // []) | length')"
-                  if [ "$users" -eq 0 ]; then
-                    status_word="PASS"; detail="no attachments"
-                  else
-                    status_word="FAIL"; detail="now attached ($users user(s))"
-                  fi
-                fi
-                ;;
-              gcp-finops-unused-ips|gcp-finops-unused-address)
-                name="$(jq -r '.fields.name // .fields.address' "$f")"
-                resource="$name"
-                json="$(gcloud compute addresses describe "$name" --region "$region" --format=json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="gcloud error: $(echo "$json" | head -1)"
-                else
-                  st="$(echo "$json" | jq -r '.status // empty')"
-                  if [ "$st" = "RESERVED" ]; then
-                    status_word="PASS"; detail="status=RESERVED"
-                  else
-                    status_word="FAIL"; detail="status=${st:-missing} (expected RESERVED)"
-                  fi
-                fi
-                ;;
-              gcp-finops-zero-vms-policy)
-                name="$(jq -r '.fields.name' "$f")"
-                zone="$(jq -r '.fields.zone' "$f")"
-                resource="$name"
-                json="$(gcloud compute instances describe "$name" --zone "$zone" --format=json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="gcloud error: $(echo "$json" | head -1)"
-                else
-                  st="$(echo "$json" | jq -r '.status // empty')"
-                  if [ -n "$st" ] && [ "$st" != "TERMINATED" ]; then
-                    status_word="PASS"; detail="status=$st"
-                  else
-                    status_word="FAIL"; detail="status=${st:-missing} (expected non-TERMINATED)"
-                  fi
-                fi
-                ;;
-              azure-finops-zero-vms-policy)
-                rid="$(jq -r '.fields.id' "$f")"
-                resource="$(jq -r '.fields.name // .fields.id' "$f")"
-                json="$(az vm show --ids "$rid" -d --output json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="az error: $(echo "$json" | head -1)"
-                else
-                  power="$(echo "$json" | jq -r '.powerState // empty')"
-                  if [ -n "$power" ] && [ "$power" != "VM deallocated" ]; then
-                    status_word="PASS"; detail="powerState=$power"
-                  else
-                    status_word="FAIL"; detail="powerState=${power:-missing} (expected running)"
-                  fi
-                fi
-                ;;
-              azure-finops-unattached-disk|azure-finops-unattached-disks)
-                rid="$(jq -r '.fields.id' "$f")"
-                resource="$(jq -r '.fields.name // .fields.id' "$f")"
-                json="$(az disk show --ids "$rid" --output json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="az error: $(echo "$json" | head -1)"
-                else
-                  mb="$(echo "$json" | jq -r '.managedBy // empty')"
-                  if [ -z "$mb" ]; then
-                    status_word="PASS"; detail="managedBy=none"
-                  else
-                    status_word="FAIL"; detail="now managed by $mb"
-                  fi
-                fi
-                ;;
-              azure-finops-unassociated-ip|azure-finops-unassociated-ips)
-                rid="$(jq -r '.fields.id' "$f")"
-                resource="$(jq -r '.fields.name // .fields.id' "$f")"
-                json="$(az network public-ip show --ids "$rid" --output json 2>&1)"
-                rc=$?
-                if [ $rc -ne 0 ]; then
-                  status_word="FAIL"; detail="az error: $(echo "$json" | head -1)"
-                else
-                  conf="$(echo "$json" | jq -r '.ipConfiguration.id // empty')"
-                  if [ -z "$conf" ]; then
-                    status_word="PASS"; detail="still unassociated"
-                  else
-                    status_word="FAIL"; detail="now associated"
-                  fi
-                fi
-                ;;
-              *)
-                resource="$(jq -r '.fields.name // .fields.id // "?"' "$f")"
-                status_word="SKIP"; detail="no CLI mapping for $cid"
-                ;;
-            esac
+              fi
+              echo "::group::$cid $resource"
+              echo "QUERY : $q"
+              echo "ROWS  : $rows"
+              echo "STDOUT: $(printf '%s' "$out" | head -c 2000)"
+              echo "STDERR: $(cat "$RUNNER_TEMP/_err" 2>/dev/null)"
+              echo "::endgroup::"
+            fi
 
             case "$status_word" in
               PASS) pass_total=$((pass_total+1));;
               FAIL) fail_total=$((fail_total+1)); overall="NEEDS-REVIEW";;
               SKIP) skip_total=$((skip_total+1));;
             esac
-
-            printf '| %s | %s | %s | %s | %s |\n' \
-              "$status_word" "$cid" "$resource" "$region" "$detail" >> "$SUMMARY_MD"
+            printf '| %s | %s | %s | %s | %s | %s |\n' \
+              "$status_word" "$cid" "$resource" "$region" "$rows" "$detail" >> "$SUMMARY_MD"
             echo "::notice::$status_word — $cid $resource ($region): $detail"
           done < "$FINDING_FILES"
 
