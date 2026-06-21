@@ -54,6 +54,60 @@ jobs:
           echo "has_files=true" >> "$GITHUB_OUTPUT"
           printf '::notice::will preflight: %s\n' "${files[@]}"
 
+      # DEBUG — proves drift vs IAM-permissions for the failing preflight.
+      # Reads each PR-changed finding.json, calls the raw AWS / GCP / Azure CLI
+      # against the resource it names. If AWS returns the resource here but the
+      # stackql preflight below sees 0 rows → IAM sub-condition narrows perms
+      # for the pull_request OIDC subject. If AWS also says NotFound → drift.
+      - name: DEBUG — direct cloud lookup per finding
+        if: steps.changed.outputs.has_files == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: DEBUG — describe each finding's resource
+        if: steps.changed.outputs.has_files == 'true'
+        env:
+          GLOB: ${{ steps.changed.outputs.glob }}
+        run: |
+          set -uo pipefail
+          echo "::group::caller identity"
+          aws sts get-caller-identity --output json || echo "sts failed"
+          echo "::endgroup::"
+
+          # Expand the glob the same way the preflight action will see it.
+          shopt -s nullglob globstar extglob
+          # shellcheck disable=SC2086
+          eval "matches=( $GLOB )"
+          for pre in "${matches[@]}"; do
+            dir="$(dirname "$pre")"
+            f="$dir/finding.json"
+            [ -f "$f" ] || { echo "::warning::no finding.json next to $pre"; continue; }
+            echo "::group::$f"
+            jq '{check_id, region, fields}' "$f"
+            cid="$(jq -r '.check_id' "$f")"
+            region="$(jq -r '.region // .fields.region // ""' "$f")"
+            case "$cid" in
+              aws-finops-unattached-volume)
+                vol="$(jq -r '.fields.volumeId' "$f")"
+                echo "::notice::aws ec2 describe-volumes --region $region --volume-ids $vol"
+                aws ec2 describe-volumes --region "$region" --volume-ids "$vol" --output json \
+                  || echo "::warning::describe-volumes failed (this is the answer: NotFound=drift; AccessDenied=IAM gating)"
+                ;;
+              aws-finops-zero-vms-policy)
+                iid="$(jq -r '.fields.instanceId' "$f")"
+                echo "::notice::aws ec2 describe-instances --region $region --instance-ids $iid"
+                aws ec2 describe-instances --region "$region" --instance-ids "$iid" --output json \
+                  || echo "::warning::describe-instances failed"
+                ;;
+              *)
+                echo "::notice::no direct-CLI debug mapped for check_id=$cid"
+                ;;
+            esac
+            echo "::endgroup::"
+          done
+
       - name: Run preflight (OIDC, read-only)
         if: steps.changed.outputs.has_files == 'true'
         id: preflight
