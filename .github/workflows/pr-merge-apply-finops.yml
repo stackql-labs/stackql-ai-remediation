@@ -92,10 +92,6 @@ jobs:
           unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
           stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
 
-          export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
-          export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
-          export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
-          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
 
           fail=0
           while IFS= read -r r; do
@@ -291,11 +287,6 @@ jobs:
           curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o /tmp/stackql.zip
           unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
           stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
-
-          export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
-          export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
-          export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
-          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
 
           fail=0
           while IFS= read -r r; do
