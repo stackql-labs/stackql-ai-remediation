@@ -134,13 +134,13 @@ jobs:
           fi
 
       # --- mutation credentials (static, SANDBOX_*) ---------------------
-      - name: Configure AWS creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
-          aws-region:            us-east-1
+      # - name: Configure AWS creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
+      #     aws-region:            us-east-1
 
       - name: Configure GCP creds (static, SANDBOX)
         if: steps.detect.outputs.found == 'true'
@@ -195,6 +195,8 @@ jobs:
           AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -uo pipefail
 
