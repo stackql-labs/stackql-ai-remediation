@@ -178,11 +178,11 @@ jobs:
           stackql exec "registry pull google;"
           stackql exec "registry pull azure;"
 
-      # --- apply per finding via stackql DELETE -------------------------
+      # --- apply per finding via stackql -------------------------
       # Per finding, run suggested_remediation.sql_query verbatim via stackql.
       # Auth: AWS via env vars (configure-aws-credentials), GCP via the SA
       # JSON env var, Azure via the SP env vars. Nothing else; no CLI.
-      - name: Apply (stackql DELETE)
+      - name: Apply (stackql)
         if: steps.detect.outputs.found == 'true'
         id: apply
         env:
@@ -288,37 +288,43 @@ jobs:
             exit 1
           fi
 
-      - name: Record outcome and move proposed -> applied
-        if: steps.detect.outputs.found == 'true' && steps.apply.outputs.pass == 'true'
+      - name: Post apply check (inline stackql, OIDC)
+        if: steps.detect.outputs.found == 'true'
         env:
-          REM_FILES:     ${{ runner.temp }}/remediation-files.txt
-          APPLY_RESULTS: ${{ steps.apply.outputs.results_json }}
+          REM_FILES: ${{ runner.temp }}/remediation-files.txt
         run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -uo pipefail
+          cd "$GITHUB_WORKSPACE"
+          curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o /tmp/stackql.zip
+          unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
+          stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
 
-          while IFS= read -r f; do
-            src_dir="$(dirname "$f")"
-            dst_dir="${src_dir/remediations\/proposed/remediations\/applied}"
-            mkdir -p "$(dirname "$dst_dir")"
-            git mv "$src_dir" "$dst_dir"
-            # Per-finding apply logs (stdout/stderr) were written into the
-            # src_dir during the apply step — they move along with git mv.
-            git add "$dst_dir"
+          export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+          export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+          export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
+          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
+
+          fail=0
+          while IFS= read -r r; do
+            f="$(dirname "$r")/finding.json"
+            [ -f "$f" ] || continue
+            q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
+            [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
+            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
+            rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
+            # Post-apply: mutation happened pre-merge; resource should be gone.
+            if [ "${rows:-0}" -eq 0 ]; then
+              echo "::notice::PASS $f (0 rows — resource gone)"
+            else
+              echo "::group::FAIL $f ($rows row(s) remaining)"
+              echo "QUERY : $q"; echo "$out" | jq .
+              echo "::endgroup::"
+              fail=$((fail+1))
+            fi
           done < "$REM_FILES"
-
-          # Stash the consolidated results.json at the run root for traceability.
-          run_root="$(awk -F/ '{print $1"/"$2"/"$3}' < "$REM_FILES" | head -1)"
-          run_root="${run_root/remediations\/proposed/remediations\/applied}"
-          mkdir -p "$run_root"
-          cp "$APPLY_RESULTS" "$run_root/apply-results.json"
-          git add "$run_root/apply-results.json"
-
-          if git diff --cached --quiet; then
-            echo "::warning::nothing to commit after apply"
-            exit 0
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::Post-apply check failed — resource(s) still present after merge."
+            exit 1
           fi
 
-          git commit -m "Apply remediation: move proposed -> applied for $GITHUB_SHA"
-          git push origin HEAD:main
+        
