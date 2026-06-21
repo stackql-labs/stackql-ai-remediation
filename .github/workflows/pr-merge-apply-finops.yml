@@ -43,10 +43,16 @@ jobs:
           AFTER:  ${{ github.event.after }}
         run: |
           set -euo pipefail
-          mapfile -t rem < <(
-            git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- \
-              'remediations/proposed/**/remediation.sql'
-          )
+          # Tag pushes have BEFORE = 000…0 → git diff returns nothing.
+          # Fall back to "all proposed remediation.sql in the working tree".
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            mapfile -t rem < <(find remediations/proposed -type f -name remediation.sql 2>/dev/null)
+          else
+            mapfile -t rem < <(
+              git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- \
+                'remediations/proposed/**/remediation.sql'
+            )
+          fi
           if [ "${#rem[@]}" -eq 0 ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "::notice::no new remediation.sql in this push"
