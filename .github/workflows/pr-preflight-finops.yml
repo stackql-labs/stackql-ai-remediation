@@ -73,7 +73,10 @@ jobs:
             out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
             rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
             if [ "${rows:-0}" -gt 0 ]; then
-              echo "::notice::PASS $f ($rows row)"
+              echo "::group::PASS $f ($rows row)"
+              echo "QUERY : $q"
+              echo "$out" | jq .
+              echo "::endgroup::"
             else
               echo "::error::FAIL $f — $out"
               fail=$((fail+1))
