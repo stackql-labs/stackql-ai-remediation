@@ -13,6 +13,8 @@ name: Apply FinOps Remediation on merge (static creds)
 
 on:
   push:
+    tags:
+      - 'apply-finops-*'
     branches:
       - main
     paths:
@@ -41,10 +43,16 @@ jobs:
           AFTER:  ${{ github.event.after }}
         run: |
           set -euo pipefail
-          mapfile -t rem < <(
-            git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- \
-              'remediations/proposed/**/remediation.sql'
-          )
+          # Tag pushes have BEFORE = 000…0 → git diff returns nothing.
+          # Fall back to "all proposed remediation.sql in the working tree".
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            mapfile -t rem < <(find remediations/proposed -type f -name remediation.sql 2>/dev/null)
+          else
+            mapfile -t rem < <(
+              git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- \
+                'remediations/proposed/**/remediation.sql'
+            )
+          fi
           if [ "${#rem[@]}" -eq 0 ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "::notice::no new remediation.sql in this push"
@@ -54,8 +62,9 @@ jobs:
           # Sibling preflight.sql for each remediation.sql
           mapfile -t pre < <(printf '%s\n' "${rem[@]}" | sed 's|remediation\.sql$|preflight.sql|')
 
-          pre_glob="{$(IFS=,; echo "${pre[*]}")}"
-          rem_glob="{$(IFS=,; echo "${rem[*]}")}"
+          # Single-item {x} is a literal — only wrap in braces when there are 2+.
+          if [ "${#pre[@]}" -eq 1 ]; then pre_glob="${pre[0]}"; else pre_glob="{$(IFS=,; echo "${pre[*]}")}"; fi
+          if [ "${#rem[@]}" -eq 1 ]; then rem_glob="${rem[0]}"; else rem_glob="{$(IFS=,; echo "${rem[*]}")}"; fi
           echo "preflight_glob=$pre_glob"     >> "$GITHUB_OUTPUT"
           echo "remediation_glob=$rem_glob"   >> "$GITHUB_OUTPUT"
           echo "found=true"                   >> "$GITHUB_OUTPUT"
@@ -64,56 +73,96 @@ jobs:
           printf '%s\n' "${rem[@]}" > "$RUNNER_TEMP/remediation-files.txt"
           printf '::notice::will apply: %s\n' "${rem[@]}"
 
-      - name: Re-verify with preflight (OIDC, read-only)
-        if: steps.detect.outputs.found == 'true'
-        id: preflight
-        uses: stackql/stackql-audit-action/actions/preflight-oidc@v0.11
-        with:
-          glob: ${{ steps.detect.outputs.preflight_glob }}
-          aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
-          aws-region: us-east-1
-          gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
-          azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
-          azure-subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
-
-      - name: Abort if preflight did not pass on merge
-        if: steps.detect.outputs.found == 'true' && steps.preflight.outputs.pass != 'true'
-        run: |
-          echo "::error::Preflight failed on merge — refusing to mutate. Investigate drift since PR was approved."
-          exit 1
-
-      # --- mutation credentials (static, SANDBOX_*) ---------------------
-      - name: Configure AWS creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
+      # --- preflight (OIDC, read-only) — same pattern as pr-preflight-finops.yml
+      - if: steps.detect.outputs.found == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
-          aws-region:            us-east-1
+          role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          aws-region: us-east-1
 
-      - name: Configure GCP creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
+      - if: steps.detect.outputs.found == 'true'
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+          workload_identity_provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - if: steps.detect.outputs.found == 'true'
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_INTEGRATION_TESTING_SUB_ID }}
+          allow-no-subscriptions: true
+
+      - name: Preflight (inline stackql, OIDC)
+        if: steps.detect.outputs.found == 'true'
+        env:
+          REM_FILES: ${{ runner.temp }}/remediation-files.txt
+        run: |
+          set -uo pipefail
+          cd "$GITHUB_WORKSPACE"
+          curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o /tmp/stackql.zip
+          unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
+          stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
+
+          export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+          export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+          export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
+          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
+
+          fail=0
+          while IFS= read -r r; do
+            f="$(dirname "$r")/finding.json"
+            [ -f "$f" ] || continue
+            q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
+            [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
+            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
+            rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
+            if [ "${rows:-0}" -gt 0 ]; then
+              echo "::group::PASS $f ($rows row)"
+              echo "QUERY : $q"; echo "$out" | jq .
+              echo "::endgroup::"
+            else
+              echo "::error::FAIL $f — $out"
+              fail=$((fail+1))
+            fi
+          done < "$REM_FILES"
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::Preflight failed on merge — refusing to mutate. Drift since PR approval likely."
+            exit 1
+          fi
+
+      # --- mutation credentials (static, SANDBOX_*) ---------------------
+      # - name: Configure AWS creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
+      #     aws-region:            us-east-1
+
+      # - name: Configure GCP creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
 
       - name: Install gcloud
         if: steps.detect.outputs.found == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Azure creds (static, SANDBOX)
-        if: steps.detect.outputs.found == 'true'
-        uses: azure/login@v2
-        with:
-          creds: |
-            {
-              "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
-              "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
-              "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
-              "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
-            }
+      # - name: Configure Azure creds (static, SANDBOX)
+      #   if: steps.detect.outputs.found == 'true'
+      #   uses: azure/login@v2
+      #   with:
+      #     creds: |
+      #       {
+      #         "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
+      #         "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
+      #         "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
+      #         "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
+      #       }
 
       # --- install stackql (mutating creds set by the SANDBOX auth steps) ---
       - name: Install stackql + providers
@@ -146,6 +195,8 @@ jobs:
           AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -uo pipefail
 
