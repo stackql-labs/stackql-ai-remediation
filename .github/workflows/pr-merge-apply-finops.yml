@@ -294,6 +294,7 @@ jobs:
           REM_FILES: ${{ runner.temp }}/remediation-files.txt
         run: |
           set -uo pipefail
+          sleep 10  # eventual consistency buffer — most APIs are eventually consistent on deletes; this mitigates flakes without a full retry loop
           cd "$GITHUB_WORKSPACE"
           curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o /tmp/stackql.zip
           unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
