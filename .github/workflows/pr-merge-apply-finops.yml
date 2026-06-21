@@ -227,8 +227,14 @@ jobs:
               continue
             fi
 
+            echo "::group::$check_id $dir"
+            echo "QUERY : $sql"
             stackql exec --output json "$sql" >"$stdout_log" 2>"$stderr_log"
             rc=$?
+            echo "EXIT  : $rc"
+            echo "STDOUT: $(cat "$stdout_log")"
+            echo "STDERR: $(cat "$stderr_log")"
+            echo "::endgroup::"
 
             if [ "$rc" -eq 0 ]; then
               applied=$((applied+1)); echo "::notice::applied (stackql) $check_id at $dir"

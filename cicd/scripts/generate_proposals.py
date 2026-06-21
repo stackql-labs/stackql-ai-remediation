@@ -130,21 +130,12 @@ def main() -> int:
 
         (dir_ / "finding.json").write_text(json.dumps(finding, indent=2) + "\n")
 
-        (dir_ / "preflight.sql").write_text(
-            "-- preflight = suggested_remediation.preflight_query (verbatim, fully substituted upstream).\n"
-            "-- pass criterion: returns >=1 row.\n"
-            f"{preflight};\n"
-        )
+        (dir_ / "preflight.sql").write_text(f"{preflight};\n")
 
         if kill_sql:
-            (dir_ / "remediation.sql").write_text(
-                "-- canonical kill SQL (documentation only; vendor CLI does the work at merge).\n"
-                f"{kill_sql};\n"
-            )
+            (dir_ / "remediation.sql").write_text(f"{kill_sql};\n")
         else:
-            (dir_ / "remediation.sql").write_text(
-                "-- no canonical kill SQL on this finding; vendor CLI dispatches by check_id.\n"
-            )
+            (dir_ / "remediation.sql").write_text("")
 
         if kill_cmd:
             (dir_ / "remediation.cmd").write_text(kill_cmd + "\n")
