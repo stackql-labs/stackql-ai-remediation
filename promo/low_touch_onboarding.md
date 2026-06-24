@@ -195,27 +195,44 @@ Successfully created/updated stack - stackql-audit
 
 ```
 
-The last line prints the role ARN. If your account already has the GitHub OIDC provider, add `CreateOIDCProvider=false` to `--parameter-overrides`.
+The output table prints two ARNs — paste both into your fork's **Settings → Secrets and variables → Actions → Variables**:
 
-In your fork: **Settings → Secrets and variables → Actions → Variables** → New repository variable:
-- Name: `STACKQL_ID_FED_AWS_ROLE_ARN`
-- Value: paste the ARN
+- `STACKQL_ID_FED_AWS_ROLE_ARN`         ← the `RoleArn` value (read-only, used by audit + PR preflight; trusts all OIDC subjects from the repo).
+- `STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN`  ← the `MutateRoleArn` value (read + write; trust locked to `ref:refs/heads/main`, used only by the post-merge apply workflow).
 
 ### 4. GCP — optional, skip if you don't run on GCP
+
+**Prerequisites — must hold before you start:**
+- You're signed in to **Cloud Shell** as a GCP user with **Organization Admin** on the org you want to audit (org-wide IAM bindings need it).
+- You know the **GCP project ID** that will host the Workload Identity Pool. Any project the audit identity can live in — pick one or create one.
+- That project is set as the active gcloud project (`gcloud config set project <id>`).
+- The shell account can see the project (`gcloud projects describe <id>` succeeds). If you opened Cloud Shell from a personal Gmail tab but the project belongs to a work account, run `gcloud auth login` and pick the right identity first.
 
 - Open this URL (it boots Cloud Shell with the script open):
   ```
   https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/<owner>/<repo>&cloudshell_workspace=cicd/onboarding/gcp&cloudshell_open_in_editor=setup.sh
   ```
+
+  eg:
+  ```
+  https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/stackql-labs/stackql-ai-remediation&cloudshell_workspace=cicd/onboarding/gcp&cloudshell_open_in_editor=setup.sh
+  ```
 - Cloud Shell will prompt for trust the first time. Accept.
 - In the Cloud Shell terminal:
-  ```
+  ```bash
   PROJECT_ID=<your-gcp-project> REPO=<owner>/<repo> bash setup.sh
   ```
+
+  eg:
+  ```bash
+  curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/gcp/setup.sh -o /tmp/s.sh && PROJECT_ID=stackql-demo REPO=stackql-labs/stackql-ai-remediation bash /tmp/s.sh
+
+  ```
   (or run `bash setup.sh` and answer the two prompts).
-- Script prints two values at the end. In your fork → Variables, add:
+- Script prints three values at the end. In your fork → Variables, add:
   - `STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER` = the WIF provider resource name
-  - `STACKQL_ID_FED_GCP_SERVICE_ACCOUNT` = the service account email
+  - `STACKQL_ID_FED_GCP_SERVICE_ACCOUNT`            = the audit (read-only) service account email
+  - `STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT`     = the mutate service account email (read + write; main-branch trust only)
 
 ### 5. Azure — optional, skip if you don't run on Azure
 
