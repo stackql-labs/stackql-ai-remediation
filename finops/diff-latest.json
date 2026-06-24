@@ -1,8 +1,8 @@
 {
   "previous_run_id": "2026-06-24T13-29-07Z",
-  "latest_run_id": "2026-06-24T13-29-07Z",
+  "latest_run_id": "2026-06-24T19-16-44Z",
   "previous_timestamp": 1782307747,
-  "latest_timestamp": 1782307747,
+  "latest_timestamp": 1782328604,
   "note": "Generic diff metadata. UI should use stable resource IDs when present for exact new/resolved calculation.",
   "previous": {
     "finops-aws": [],
