@@ -170,19 +170,28 @@ Or, if OIDC provider already exists
 
 aws cloudformation delete-stack --stack-name stackql-audit \
 && aws cloudformation wait stack-delete-complete --stack-name stackql-audit \
+&& curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/aws/template.yaml -o /tmp/t.yaml \
 && aws cloudformation deploy \
      --stack-name stackql-audit \
      --template-file /tmp/t.yaml \
-     --parameter-overrides RepoFullName=stackql-labs/stackql-ai-remediation CreateOIDCProvider=false \
-     --capabilities CAPABILITY_NAMED_IAM \
+     --parameter-overrides RepoFullName=stackql-labs/stackql-ai-remediation \
+     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM \
 && aws cloudformation describe-stacks --stack-name stackql-audit \
-     --query 'Stacks[0].Outputs[?OutputKey==`RoleArn`].OutputValue' --output text
+     --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table
+
 
 
 Waiting for changeset to be created..
 Waiting for stack create/update to complete
 Successfully created/updated stack - stackql-audit
-arn:aws:iam::824532806693:role/stackql-audit
+---------------------------------------------------------------------
+|                          DescribeStacks                           |
++-----------------+-------------------------------------------------+
+|  MutateRoleArn  |  arn:aws:iam::824532806693:role/stackql-mutate  |
+|  AccountId      |  824532806693                                   |
+|  RoleArn        |  arn:aws:iam::824532806693:role/stackql-audit   |
+|  LaunchedRegion |  ap-southeast-2                                 |
++-----------------+-------------------------------------------------+
 
 ```
 
