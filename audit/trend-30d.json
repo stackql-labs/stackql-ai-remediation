@@ -7,5 +7,14 @@
     "medium": 0,
     "low": 0,
     "unknown": 0
+  },
+  {
+    "run_id": "2026-06-24T18-32-55Z",
+    "timestamp": 1782325975,
+    "total_findings": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "unknown": 0
   }
 ]
