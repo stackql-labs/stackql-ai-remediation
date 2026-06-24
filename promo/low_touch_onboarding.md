@@ -227,6 +227,17 @@ The output table prints two ARNs — paste both into your fork's **Settings → 
   ```bash
   curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/gcp/setup.sh -o /tmp/s.sh && PROJECT_ID=stackql-demo REPO=stackql-labs/stackql-ai-remediation bash /tmp/s.sh
 
+Done. Paste these into your GitHub repo (Settings → Secrets and variables → Actions → Variables):
+
+  STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER  =  projects/405888094473/locations/global/workloadIdentityPools/github-actions/providers/github
+  STACKQL_ID_FED_GCP_SERVICE_ACCOUNT             =  stackql-audit-sa@stackql-demo.iam.gserviceaccount.com
+  STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT      =  stackql-mutate-sa@stackql-demo.iam.gserviceaccount.com
+
+or via gh CLI:
+  gh variable set STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER --body 'projects/405888094473/locations/global/workloadIdentityPools/github-actions/providers/github'
+  gh variable set STACKQL_ID_FED_GCP_SERVICE_ACCOUNT            --body 'stackql-audit-sa@stackql-demo.iam.gserviceaccount.com'
+  gh variable set STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT     --body 'stackql-mutate-sa@stackql-demo.iam.gserviceaccount.com'
+
   ```
   (or run `bash setup.sh` and answer the two prompts).
 - Script prints three values at the end. In your fork → Variables, add:
@@ -243,12 +254,12 @@ The output table prints two ARNs — paste both into your fork's **Settings → 
 - Sign in to Azure as someone with **Owner** at subscription scope (the template assigns subscription-level Reader + Security Reader to the new identity).
 - Fill `repoFullName` = `<owner>/<repo>`. Leave the rest default. Choose the subscription you want to audit.
 - Click **Review + create**, then **Create**. Wait ~1 minute.
-- On the deployment's **Outputs** blade, copy `tenantId`, `clientId`, `subscriptionId`.
+- On the deployment's **Outputs** blade, copy `tenantId`, `subscriptionId`, `clientId`, and `mutateClientId`.
 - In your fork → Variables, add:
   - `STACKQL_ID_FED_AZURE_TENANT_ID`         = the tenantId
-  - `STACKQL_ID_FED_AZURE_CLIENT_ID`         = the clientId
   - `AZURE_INTEGRATION_TESTING_SUB_ID`       = the subscriptionId
-- Note: the default subject in the template is `ref:refs/heads/main`. If you also want PR checks / tag-triggered runs to authenticate, add additional federated credentials on the identity for `pull_request` and `ref:refs/tags/*` subjects.
+  - `STACKQL_ID_FED_AZURE_CLIENT_ID`         = the clientId (audit identity — read-only; federated for main + pull_request subjects)
+  - `STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID`  = the mutateClientId (mutate identity — read + delete on finops resources; federated for main-branch context only)
 
 ### 6. Trigger the first run
 
