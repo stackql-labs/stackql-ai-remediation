@@ -23,33 +23,89 @@ Parameters:
 
   RoleName:
     Type: String
-    Description: 'IAM role name.'
+    Description: 'IAM role name for the read-only audit role.'
     Default: 'stackql-audit'
 
-  CreateOIDCProvider:
+  MutateRoleName:
     Type: String
-    Description: >
-      Set to 'false' if this account already has the GitHub OIDC provider
-      (token.actions.githubusercontent.com). Most accounts that have ever set
-      up GitHub Actions OIDC already do — check IAM → Identity providers.
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-
-Conditions:
-  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
+    Description: 'IAM role name for the write-capable mutate role (trust locked to main-branch only).'
+    Default: 'stackql-mutate'
 
 Resources:
-  GitHubOIDCProvider:
-    Type: AWS::IAM::OIDCProvider
-    Condition: ShouldCreateOIDCProvider
+  # Custom resource that creates the GitHub OIDC provider if and only if it
+  # doesn't already exist in this account. On stack delete it intentionally
+  # leaves the provider in place (other stacks may share it).
+  OIDCProviderEnsurerRole:
+    Type: AWS::IAM::Role
     Properties:
-      Url: 'https://token.actions.githubusercontent.com'
-      ClientIdList:
-        - 'sts.amazonaws.com'
-      # Thumbprints are no longer validated for github.com OIDC since 2023, but
-      # CloudFormation still requires the field. Any 40-char hex is accepted.
-      ThumbprintList:
-        - '6938fd4d98bab03faadb97b34396831e3780aea1'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: oidc-provider-ensure
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'iam:ListOpenIDConnectProviders'
+                  - 'iam:CreateOpenIDConnectProvider'
+                Resource: '*'
+
+  OIDCProviderEnsurerFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt OIDCProviderEnsurerRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json, urllib.request, boto3
+          IAM = boto3.client('iam')
+          URL = 'https://token.actions.githubusercontent.com'
+
+          def _respond(event, context, status, data=None, reason=''):
+              body = json.dumps({
+                  'Status': status,
+                  'Reason': reason or f'See CloudWatch log stream: {context.log_stream_name}',
+                  'PhysicalResourceId': event.get('PhysicalResourceId') or 'github-oidc-provider',
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data or {},
+              }).encode()
+              req = urllib.request.Request(event['ResponseURL'], data=body, method='PUT',
+                                           headers={'content-type': ''})
+              urllib.request.urlopen(req).read()
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      # Intentionally leave the provider in place.
+                      return _respond(event, context, 'SUCCESS')
+                  existing = {p['Arn'] for p in IAM.list_open_id_connect_providers()['OpenIDConnectProviderList']}
+                  match = next((a for a in existing if a.endswith('oidc-provider/token.actions.githubusercontent.com')), None)
+                  if not match:
+                      resp = IAM.create_open_id_connect_provider(
+                          Url=URL,
+                          ClientIDList=['sts.amazonaws.com'],
+                          ThumbprintList=['6938fd4d98bab03faadb97b34396831e3780aea1'],
+                      )
+                      match = resp['OpenIDConnectProviderArn']
+                  return _respond(event, context, 'SUCCESS', {'Arn': match})
+              except Exception as e:
+                  return _respond(event, context, 'FAILED', reason=str(e))
+
+  GitHubOIDCProvider:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt OIDCProviderEnsurerFn.Arn
 
   StackqlAuditRole:
     Type: AWS::IAM::Role
@@ -82,10 +138,57 @@ Resources:
                   - 'cloudformation:ListResourceRequests'
                 Resource: '*'
 
+  StackqlMutateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref MutateRoleName
+      # Trust locked to main-branch context only — PR-context tokens cannot
+      # assume this role even if SubjectPattern on the audit role is wide.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${RepoFullName}:ref:refs/heads/main'
+      # Read access for convenience (same workflow does preflight + apply).
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/SecurityAudit'
+      Policies:
+        - PolicyName: stackql-cloud-control-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:ListResources'
+                  - 'cloudformation:GetResource'
+                  - 'cloudformation:GetResourceRequestStatus'
+                  - 'cloudformation:ListResourceRequests'
+                Resource: '*'
+        - PolicyName: stackql-finops-mutate
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:DeleteVolume'           # unattached-volumes
+                  - 'ec2:ReleaseAddress'         # unassociated-eips
+                  - 'ec2:TerminateInstances'     # zero-vms-policy
+                  - 'cloudformation:DeleteResource'   # stackql Cloud Control delete
+                Resource: '*'
+
 Outputs:
   RoleArn:
-    Description: 'ARN of the audit role. Paste into the GitHub repo variable STACKQL_AWS_ROLE_ARN.'
+    Description: 'ARN of the read-only audit role. Paste into the GitHub repo variable STACKQL_ID_FED_AWS_ROLE_ARN.'
     Value: !GetAtt StackqlAuditRole.Arn
+  MutateRoleArn:
+    Description: 'ARN of the mutate role (main-branch trust only). Paste into the GitHub repo variable STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN.'
+    Value: !GetAtt StackqlMutateRole.Arn
   AccountId:
     Description: 'AWS account ID this role lives in.'
     Value: !Ref AWS::AccountId

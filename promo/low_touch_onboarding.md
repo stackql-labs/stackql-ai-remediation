@@ -113,3 +113,137 @@ Three buttons under "Get started":
 > 4. Push a tag. Watch the dashboard fill in.
 
 Setup time target: under 5 minutes per cloud, no Terraform, no creds shipped.
+
+
+## Walkthrough
+
+End-to-end. Plan for ~10 minutes total if you wire up all three clouds, ~3 minutes if just one.
+
+### 1. Fork the repo
+
+Click **Fork** in the top right of `stackql-labs/stackql-actions-sandbox`. Use your own GitHub username or org.
+
+Below, replace `<owner>/<repo>` with your fork (e.g. `acme/stackql-actions-sandbox`).
+
+### 2. Anthropic API key (mandatory)
+
+The agent step (per-finding rationale + captain's-call flags) calls Claude. Without this the workflow can run but the PR rationale will be empty.
+
+- Go to https://console.anthropic.com/ → API Keys → Create key.
+- Copy the key (`sk-ant-…`).
+- In your fork: **Settings → Secrets and variables → Actions → Secrets** → New repository secret:
+  - Name: `ANTHROPIC_API_KEY`
+  - Value: paste
+
+### 3. AWS — optional, skip if you don't run on AWS
+
+Open **AWS CloudShell** in the account you want to audit (top-right console icon) — it's already authed, nothing to ship. Paste:
+
+
+```bash
+curl -sL https://raw.githubusercontent.com/<owner>/<repo>/main/cicd/onboarding/aws/template.yaml -o /tmp/t.yaml \
+&& aws cloudformation deploy \
+     --stack-name stackql-audit \
+     --template-file /tmp/t.yaml \
+     --parameter-overrides RepoFullName=<owner>/<repo> \
+     --capabilities CAPABILITY_NAMED_IAM \
+&& aws cloudformation describe-stacks --stack-name stackql-audit \
+     --query 'Stacks[0].Outputs[?OutputKey==`RoleArn`].OutputValue' --output text
+```
+
+eg:
+
+```bash
+curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/aws/template.yaml -o /tmp/t.yaml \
+&& aws cloudformation deploy \
+     --stack-name stackql-audit \
+     --template-file /tmp/t.yaml \
+     --parameter-overrides RepoFullName=stackql-labs/stackql-ai-remediation \
+     --capabilities CAPABILITY_NAMED_IAM \
+&& aws cloudformation describe-stacks --stack-name stackql-audit \
+     --query 'Stacks[0].Outputs[?OutputKey==`RoleArn`].OutputValue' --output text
+```
+
+Or, if OIDC provider already exists
+
+```bash
+
+aws cloudformation delete-stack --stack-name stackql-audit \
+&& aws cloudformation wait stack-delete-complete --stack-name stackql-audit \
+&& aws cloudformation deploy \
+     --stack-name stackql-audit \
+     --template-file /tmp/t.yaml \
+     --parameter-overrides RepoFullName=stackql-labs/stackql-ai-remediation CreateOIDCProvider=false \
+     --capabilities CAPABILITY_NAMED_IAM \
+&& aws cloudformation describe-stacks --stack-name stackql-audit \
+     --query 'Stacks[0].Outputs[?OutputKey==`RoleArn`].OutputValue' --output text
+
+
+Waiting for changeset to be created..
+Waiting for stack create/update to complete
+Successfully created/updated stack - stackql-audit
+arn:aws:iam::824532806693:role/stackql-audit
+
+```
+
+The last line prints the role ARN. If your account already has the GitHub OIDC provider, add `CreateOIDCProvider=false` to `--parameter-overrides`.
+
+In your fork: **Settings → Secrets and variables → Actions → Variables** → New repository variable:
+- Name: `STACKQL_ID_FED_AWS_ROLE_ARN`
+- Value: paste the ARN
+
+### 4. GCP — optional, skip if you don't run on GCP
+
+- Open this URL (it boots Cloud Shell with the script open):
+  ```
+  https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/<owner>/<repo>&cloudshell_workspace=cicd/onboarding/gcp&cloudshell_open_in_editor=setup.sh
+  ```
+- Cloud Shell will prompt for trust the first time. Accept.
+- In the Cloud Shell terminal:
+  ```
+  PROJECT_ID=<your-gcp-project> REPO=<owner>/<repo> bash setup.sh
+  ```
+  (or run `bash setup.sh` and answer the two prompts).
+- Script prints two values at the end. In your fork → Variables, add:
+  - `STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER` = the WIF provider resource name
+  - `STACKQL_ID_FED_GCP_SERVICE_ACCOUNT` = the service account email
+
+### 5. Azure — optional, skip if you don't run on Azure
+
+- Click the **Deploy to Azure** button:
+  ```
+  https://portal.azure.com/#blade/Microsoft_Azure_CreateUIDef/CustomDeploymentBlade/uri/https%3A%2F%2Fraw.githubusercontent.com%2F<owner>%2F<repo>%2Fmain%2Fcicd%2Fonboarding%2Fazure%2Ftemplate.json
+  ```
+- Sign in to Azure as someone with **Owner** at subscription scope (the template assigns subscription-level Reader + Security Reader to the new identity).
+- Fill `repoFullName` = `<owner>/<repo>`. Leave the rest default. Choose the subscription you want to audit.
+- Click **Review + create**, then **Create**. Wait ~1 minute.
+- On the deployment's **Outputs** blade, copy `tenantId`, `clientId`, `subscriptionId`.
+- In your fork → Variables, add:
+  - `STACKQL_ID_FED_AZURE_TENANT_ID`         = the tenantId
+  - `STACKQL_ID_FED_AZURE_CLIENT_ID`         = the clientId
+  - `AZURE_INTEGRATION_TESTING_SUB_ID`       = the subscriptionId
+- Note: the default subject in the template is `ref:refs/heads/main`. If you also want PR checks / tag-triggered runs to authenticate, add additional federated credentials on the identity for `pull_request` and `ref:refs/tags/*` subjects.
+
+### 6. Trigger the first run
+
+Two options:
+
+- **Tag push**: `git tag audit-finops-oidc-test1 && git push origin audit-finops-oidc-test1`
+- **Manual**: Actions tab → **Cloud FinOps Audit (OIDC)** → **Run workflow**.
+
+The audit runs against whichever clouds you wired up (it skips the ones with missing variables). When it finishes:
+
+- The findings dashboard publishes to `https://<owner>.github.io/<repo>/finops/` (enable GitHub Pages on the `gh-pages` branch, Settings → Pages, if you haven't already).
+- Per-finding PRs open under the bot account.
+- Reviewing + merging a PR triggers the apply workflow.
+
+### What you don't need
+
+- No Terraform, no creds stored locally, no third-party SaaS account.
+- No mutation creds at this tier — you can review the PRs and run the SQL yourself if you don't want auto-apply.
+
+### Adding auto-apply later (mutation tier)
+
+This is opt-in. When you're ready, a second set of templates creates write-scoped principals; the outputs paste into **Secrets** (not Variables) named `SANDBOX_AWS_ACCESS_KEY_ID` / `SANDBOX_AWS_SECRET_ACCESS_KEY` / `SANDBOX_GOOGLE_CREDENTIALS` / `SANDBOX_AZURE_*`. The apply workflow only runs when those exist.
+
+
