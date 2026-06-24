@@ -249,6 +249,12 @@ or via gh CLI:
 
 - Click the **Deploy to Azure** button:
   ```
+  https://portal.azure.com/#blade/Microsoft_Azure_CreateUIDef/CustomDeploymentBlade/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fstackql-labs%2Fstackql-ai-remediation%2Fmain%2Fcicd%2Fonboarding%2Fazure%2Ftemplate.json
+  ```
+
+  eg:
+
+  ```
   https://portal.azure.com/#blade/Microsoft_Azure_CreateUIDef/CustomDeploymentBlade/uri/https%3A%2F%2Fraw.githubusercontent.com%2F<owner>%2F<repo>%2Fmain%2Fcicd%2Fonboarding%2Fazure%2Ftemplate.json
   ```
 - Sign in to Azure as someone with **Owner** at subscription scope (the template assigns subscription-level Reader + Security Reader to the new identity).

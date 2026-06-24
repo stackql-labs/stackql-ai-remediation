@@ -1,33 +1,33 @@
 {
-  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "$schema": "https://schema.management.azure.com/schemas/2019-08-01/managementGroupDeploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "_description": "StackQL audit — OIDC bootstrap for Azure (subscription-scope). Creates TWO User Assigned Managed Identities: 'audit' (read-only, federated for main + pull_request subjects) and 'mutate' (read+write, federated for main only). Role assignments at subscription scope. No client secrets."
+    "_description": "StackQL audit — OIDC bootstrap for Azure at management-group scope. Creates two User Assigned Managed Identities in a host subscription, and assigns Reader/Security Reader (audit) and Reader/Security Reader/VM Contributor/Network Contributor (mutate) at the management group scope so the audit covers every subscription under the MG. Mutate identity's federated credential is locked to main-branch context."
   },
   "parameters": {
     "repoFullName": {
       "type": "string",
       "metadata": { "description": "GitHub repo allowed to assume these identities (owner/repo)." }
     },
+    "hostSubscriptionId": {
+      "type": "string",
+      "metadata": { "description": "Subscription ID that hosts the UAMIs (any sub under the management group; identity itself is global)." }
+    },
     "auditIdentityName": {
       "type": "string",
-      "defaultValue": "stackql-audit",
-      "metadata": { "description": "Name of the audit (read-only) UAMI." }
+      "defaultValue": "stackql-audit"
     },
     "mutateIdentityName": {
       "type": "string",
-      "defaultValue": "stackql-mutate",
-      "metadata": { "description": "Name of the mutate (read+write, main-branch only) UAMI." }
+      "defaultValue": "stackql-mutate"
     },
     "resourceGroupName": {
       "type": "string",
-      "defaultValue": "stackql-audit-rg",
-      "metadata": { "description": "Resource group to create/use for the UAMIs." }
+      "defaultValue": "stackql-audit-rg"
     },
     "location": {
       "type": "string",
-      "defaultValue": "eastus",
-      "metadata": { "description": "Region for the resource group + UAMIs." }
+      "defaultValue": "eastus"
     }
   },
   "variables": {
@@ -38,109 +38,146 @@
   },
   "resources": [
     {
-      "type": "Microsoft.Resources/resourceGroups",
-      "apiVersion": "2022-09-01",
-      "name": "[parameters('resourceGroupName')]",
-      "location": "[parameters('location')]",
-      "properties": {}
-    },
-    {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
-      "name": "uami-deployment",
-      "resourceGroup": "[parameters('resourceGroupName')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]"
-      ],
+      "name": "uami-subscription-deployment",
+      "subscriptionId": "[parameters('hostSubscriptionId')]",
+      "location": "[parameters('location')]",
       "properties": {
         "mode": "Incremental",
         "expressionEvaluationOptions": { "scope": "inner" },
         "parameters": {
           "auditIdentityName":  { "value": "[parameters('auditIdentityName')]" },
           "mutateIdentityName": { "value": "[parameters('mutateIdentityName')]" },
+          "resourceGroupName":  { "value": "[parameters('resourceGroupName')]" },
           "location":           { "value": "[parameters('location')]" },
           "repoFullName":       { "value": "[parameters('repoFullName')]" }
         },
         "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
           "parameters": {
             "auditIdentityName":  { "type": "string" },
             "mutateIdentityName": { "type": "string" },
+            "resourceGroupName":  { "type": "string" },
             "location":           { "type": "string" },
             "repoFullName":       { "type": "string" }
           },
           "resources": [
             {
-              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
-              "apiVersion": "2023-01-31",
-              "name": "[parameters('auditIdentityName')]",
-              "location": "[parameters('location')]"
+              "type": "Microsoft.Resources/resourceGroups",
+              "apiVersion": "2022-09-01",
+              "name": "[parameters('resourceGroupName')]",
+              "location": "[parameters('location')]",
+              "properties": {}
             },
             {
-              "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
-              "apiVersion": "2023-01-31",
-              "name": "[format('{0}/main', parameters('auditIdentityName'))]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2022-09-01",
+              "name": "uami-rg-deployment",
+              "resourceGroup": "[parameters('resourceGroupName')]",
               "dependsOn": [
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName'))]"
+                "[resourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]"
               ],
               "properties": {
-                "issuer":    "https://token.actions.githubusercontent.com",
-                "subject":   "[format('repo:{0}:ref:refs/heads/main', parameters('repoFullName'))]",
-                "audiences": [ "api://AzureADTokenExchange" ]
-              }
-            },
-            {
-              "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
-              "apiVersion": "2023-01-31",
-              "name": "[format('{0}/pull-request', parameters('auditIdentityName'))]",
-              "dependsOn": [
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName'))]",
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials', parameters('auditIdentityName'), 'main')]"
-              ],
-              "properties": {
-                "issuer":    "https://token.actions.githubusercontent.com",
-                "subject":   "[format('repo:{0}:pull_request', parameters('repoFullName'))]",
-                "audiences": [ "api://AzureADTokenExchange" ]
-              }
-            },
-            {
-              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
-              "apiVersion": "2023-01-31",
-              "name": "[parameters('mutateIdentityName')]",
-              "location": "[parameters('location')]"
-            },
-            {
-              "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
-              "apiVersion": "2023-01-31",
-              "name": "[format('{0}/main', parameters('mutateIdentityName'))]",
-              "dependsOn": [
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName'))]"
-              ],
-              "properties": {
-                "issuer":    "https://token.actions.githubusercontent.com",
-                "subject":   "[format('repo:{0}:ref:refs/heads/main', parameters('repoFullName'))]",
-                "audiences": [ "api://AzureADTokenExchange" ]
+                "mode": "Incremental",
+                "expressionEvaluationOptions": { "scope": "inner" },
+                "parameters": {
+                  "auditIdentityName":  { "value": "[parameters('auditIdentityName')]" },
+                  "mutateIdentityName": { "value": "[parameters('mutateIdentityName')]" },
+                  "location":           { "value": "[parameters('location')]" },
+                  "repoFullName":       { "value": "[parameters('repoFullName')]" }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "parameters": {
+                    "auditIdentityName":  { "type": "string" },
+                    "mutateIdentityName": { "type": "string" },
+                    "location":           { "type": "string" },
+                    "repoFullName":       { "type": "string" }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+                      "apiVersion": "2023-01-31",
+                      "name": "[parameters('auditIdentityName')]",
+                      "location": "[parameters('location')]"
+                    },
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+                      "apiVersion": "2023-01-31",
+                      "name": "[format('{0}/main', parameters('auditIdentityName'))]",
+                      "dependsOn": [
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName'))]"
+                      ],
+                      "properties": {
+                        "issuer":    "https://token.actions.githubusercontent.com",
+                        "subject":   "[format('repo:{0}:ref:refs/heads/main', parameters('repoFullName'))]",
+                        "audiences": [ "api://AzureADTokenExchange" ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+                      "apiVersion": "2023-01-31",
+                      "name": "[format('{0}/pull-request', parameters('auditIdentityName'))]",
+                      "dependsOn": [
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName'))]",
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials', parameters('auditIdentityName'), 'main')]"
+                      ],
+                      "properties": {
+                        "issuer":    "https://token.actions.githubusercontent.com",
+                        "subject":   "[format('repo:{0}:pull_request', parameters('repoFullName'))]",
+                        "audiences": [ "api://AzureADTokenExchange" ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+                      "apiVersion": "2023-01-31",
+                      "name": "[parameters('mutateIdentityName')]",
+                      "location": "[parameters('location')]"
+                    },
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+                      "apiVersion": "2023-01-31",
+                      "name": "[format('{0}/main', parameters('mutateIdentityName'))]",
+                      "dependsOn": [
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName'))]"
+                      ],
+                      "properties": {
+                        "issuer":    "https://token.actions.githubusercontent.com",
+                        "subject":   "[format('repo:{0}:ref:refs/heads/main', parameters('repoFullName'))]",
+                        "audiences": [ "api://AzureADTokenExchange" ]
+                      }
+                    }
+                  ],
+                  "outputs": {
+                    "auditPrincipalId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName')), '2023-01-31').principalId]"
+                    },
+                    "auditClientId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName')), '2023-01-31').clientId]"
+                    },
+                    "mutatePrincipalId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName')), '2023-01-31').principalId]"
+                    },
+                    "mutateClientId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName')), '2023-01-31').clientId]"
+                    }
+                  }
+                }
               }
             }
           ],
           "outputs": {
-            "auditPrincipalId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName')), '2023-01-31').principalId]"
-            },
-            "auditClientId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('auditIdentityName')), '2023-01-31').clientId]"
-            },
-            "mutatePrincipalId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName')), '2023-01-31').principalId]"
-            },
-            "mutateClientId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('mutateIdentityName')), '2023-01-31').clientId]"
-            }
+            "auditPrincipalId":  { "type": "string", "value": "[reference('uami-rg-deployment').outputs.auditPrincipalId.value]" },
+            "auditClientId":     { "type": "string", "value": "[reference('uami-rg-deployment').outputs.auditClientId.value]" },
+            "mutatePrincipalId": { "type": "string", "value": "[reference('uami-rg-deployment').outputs.mutatePrincipalId.value]" },
+            "mutateClientId":    { "type": "string", "value": "[reference('uami-rg-deployment').outputs.mutateClientId.value]" }
           }
         }
       }
@@ -148,86 +185,75 @@
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('auditIdentityName'), 'reader')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('auditIdentityName'), 'reader')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.auditPrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.auditPrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('auditIdentityName'), 'security-reader')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('auditIdentityName'), 'security-reader')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('securityReaderRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.auditPrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('securityReaderRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.auditPrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('mutateIdentityName'), 'reader')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('mutateIdentityName'), 'reader')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.mutatePrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.mutatePrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('mutateIdentityName'), 'security-reader')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('mutateIdentityName'), 'security-reader')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('securityReaderRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.mutatePrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('securityReaderRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.mutatePrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('mutateIdentityName'), 'vm-contributor')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('mutateIdentityName'), 'vm-contributor')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('vmContributorRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.mutatePrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('vmContributorRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.mutatePrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(subscription().id, parameters('mutateIdentityName'), 'network-contributor')]",
-      "dependsOn": [ "uami-deployment" ],
+      "name": "[guid(managementGroup().id, parameters('mutateIdentityName'), 'network-contributor')]",
+      "dependsOn": [ "uami-subscription-deployment" ],
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('networkContributorRoleId'))]",
-        "principalId":      "[reference('uami-deployment').outputs.mutatePrincipalId.value]",
+        "roleDefinitionId": "[tenantResourceId('Microsoft.Authorization/roleDefinitions', variables('networkContributorRoleId'))]",
+        "principalId":      "[reference('uami-subscription-deployment').outputs.mutatePrincipalId.value]",
         "principalType":    "ServicePrincipal"
       }
     }
   ],
   "outputs": {
-    "tenantId": {
-      "type": "string",
-      "value": "[subscription().tenantId]"
-    },
-    "subscriptionId": {
-      "type": "string",
-      "value": "[subscription().subscriptionId]"
-    },
-    "clientId": {
-      "type": "string",
-      "value": "[reference('uami-deployment').outputs.auditClientId.value]"
-    },
-    "mutateClientId": {
-      "type": "string",
-      "value": "[reference('uami-deployment').outputs.mutateClientId.value]"
-    }
+    "tenantId":           { "type": "string", "value": "[tenant().tenantId]" },
+    "managementGroupId":  { "type": "string", "value": "[managementGroup().name]" },
+    "hostSubscriptionId": { "type": "string", "value": "[parameters('hostSubscriptionId')]" },
+    "clientId":           { "type": "string", "value": "[reference('uami-subscription-deployment').outputs.auditClientId.value]" },
+    "mutateClientId":     { "type": "string", "value": "[reference('uami-subscription-deployment').outputs.mutateClientId.value]" }
   }
 }
