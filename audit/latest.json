@@ -1,0 +1,32 @@
+{
+  "timestamp": 1782304821,
+  "run_id": "2026-06-24T12-40-21Z",
+  "workflow": {
+    "repository": "stackql-labs/stackql-ai-remediation",
+    "run_id": "28099123797",
+    "run_number": "1",
+    "commit_sha": "eb79b8f42060e9c48920c0130af2d64f07bfb249"
+  },
+  "audit": {
+    "type": "cross_cloud_oidc",
+    "target": {
+      "enterprise": {
+        "name": "StackQL Studios PTY LTD",
+        "short_name": "stackql"
+      },
+      "hierarchy": {
+        "google": {
+          "org_id": "141318256085"
+        },
+        "aws": {
+          "region": "us-east-1"
+        },
+        "azure": {
+          "mgmt_group": ""
+        }
+      },
+      "requested": "s3 aws-regions gcp-org azure-org entra"
+    },
+    "data": {}
+  }
+}

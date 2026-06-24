@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StackQL Cloud Audit Findings</title>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0b1020; color: #eef2ff; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 56px; }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 28px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: -0.03em; }
+    .sub { color: #aab4d4; margin-top: 6px; }
+    button { background: #eef2ff; color: #0b1020; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+    .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .card, .panel { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 16px; box-shadow: 0 16px 40px rgba(0,0,0,0.18); }
+    .label { color: #aab4d4; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .value { font-size: 30px; font-weight: 800; margin-top: 8px; }
+    .panels { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 10px 8px; text-align: left; vertical-align: top; }
+    th { color: #aab4d4; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    pre { overflow: auto; background: rgba(0,0,0,0.25); padding: 12px; border-radius: 12px; max-height: 420px; }
+    a { color: #bfdbfe; }
+    code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+    .sev { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+    .sev-high { background: #7f1d1d; color: #fee2e2; }
+    .sev-medium { background: #78350f; color: #fed7aa; }
+    .sev-low { background: #1e3a8a; color: #bfdbfe; }
+    .sev-unknown { background: #374151; color: #e5e7eb; }
+    .sev-none { background: rgba(255,255,255,0.1); color: #aab4d4; }
+    .ctx { color: #aab4d4; font-size: 12px; }
+    .empty { color: #aab4d4; padding: 16px 8px; }
+    @media (max-width: 820px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } header { align-items: flex-start; flex-direction: column; } }
+    @media print { body { background: white; color: black; } button { display: none; } .card, .panel { box-shadow: none; border-color: #ddd; background: white; } .sub, .label, th { color: #555; } a { color: black; } .no-print { display: none !important; } .sev-high { background: #fee2e2; color: #7f1d1d; } .sev-medium { background: #fed7aa; color: #78350f; } .sev-low { background: #dbeafe; color: #1e3a8a; } .sev-unknown { background: #e5e7eb; color: #374151; } .ctx { color: #555; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Cloud Audit Findings</h1>
+        <div class="sub" id="run-meta">Loading latest audit…</div>
+      </div>
+      <button onclick="window.print()">Create summary PDF</button>
+    </header>
+
+    <section class="grid">
+      <div class="card"><div class="label">Total findings</div><div class="value" id="total">—</div></div>
+      <div class="card"><div class="label">High</div><div class="value" id="high">—</div></div>
+      <div class="card"><div class="label">Medium</div><div class="value" id="medium">—</div></div>
+      <div class="card"><div class="label">Low</div><div class="value" id="low">—</div></div>
+      <div class="card"><div class="label">Unknown</div><div class="value" id="unknown">—</div></div>
+    </section>
+
+    <section class="panels">
+      <div class="panel">
+        <h2>Findings</h2>
+        <table id="findings"><thead><tr><th>Target</th><th>Name</th><th>Severity</th><th>Context</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h2>30-run trend</h2>
+        <table id="trend"><thead><tr><th>Run</th><th>Total</th><th>High</th><th>Medium</th><th>Low</th><th>Unknown</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel no-print" id="json-panel">
+        <h2>Latest summary JSON</h2>
+        <p><a href="audit/latest.json">latest.json</a> · <a href="audit/previous.json">previous.json</a> · <a href="audit/diff-latest.json">diff-latest.json</a> · <a href="audit/trend-30d.json">trend-30d.json</a></p>
+        <pre id="raw"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const n = (value) => value === null || value === undefined ? '—' : value;
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const sevClass = (s) => {
+      const u = String(s || '').toUpperCase();
+      if (u === 'HIGH') return 'sev-high';
+      if (u === 'MEDIUM') return 'sev-medium';
+      if (u === 'LOW') return 'sev-low';
+      if (u === 'UNKNOWN') return 'sev-unknown';
+      return 'sev-none';
+    };
+
+    const collectFindings = (root) => {
+      const out = [];
+      const walk = (node, target) => {
+        if (Array.isArray(node)) { node.forEach(v => walk(v, target)); return; }
+        if (!node || typeof node !== 'object') return;
+        if (typeof node.severity === 'string') out.push({ target, ...node });
+        for (const v of Object.values(node)) walk(v, target);
+      };
+      for (const [target, value] of Object.entries(root || {})) walk(value, target);
+      return out;
+    };
+
+    async function main() {
+      const latest = await fetch('audit/latest.json').then(r => r.json());
+      const trend = await fetch('audit/trend-30d.json').then(r => r.json()).catch(() => []);
+      const data = latest.audit?.data || {};
+
+      const findings = collectFindings(data);
+      const counts = { HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+      for (const f of findings) {
+        const u = String(f.severity || '').toUpperCase();
+        if (u in counts) counts[u]++;
+      }
+
+      document.getElementById('run-meta').textContent = `${latest.audit?.type || 'audit'} · run ${latest.run_id || 'unknown'} · ${latest.workflow?.repository || ''}`;
+      document.getElementById('total').textContent = findings.length;
+      document.getElementById('high').textContent = counts.HIGH;
+      document.getElementById('medium').textContent = counts.MEDIUM;
+      document.getElementById('low').textContent = counts.LOW;
+      document.getElementById('unknown').textContent = counts.UNKNOWN;
+      document.getElementById('raw').textContent = JSON.stringify(data, null, 2);
+
+      const ftbody = document.querySelector('#findings tbody');
+      if (findings.length === 0) {
+        ftbody.innerHTML = `<tr><td colspan="4" class="empty">No findings.</td></tr>`;
+      } else {
+        const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2, UNKNOWN: 3 };
+        const sorted = findings.slice().sort((a, b) => {
+          const ra = severityRank[String(a.severity || '').toUpperCase()] ?? 9;
+          const rb = severityRank[String(b.severity || '').toUpperCase()] ?? 9;
+          if (ra !== rb) return ra - rb;
+          return String(a.target).localeCompare(String(b.target));
+        });
+        ftbody.innerHTML = sorted.map(f => {
+          const { target, severity, name, ...rest } = f;
+          const ctx = Object.entries(rest)
+            .filter(([, v]) => v !== null && v !== undefined && v !== '')
+            .map(([k, v]) => `${esc(k)}: ${esc(typeof v === 'object' ? JSON.stringify(v) : v)}`)
+            .join(' · ');
+          return `<tr>
+            <td><code>${esc(target)}</code></td>
+            <td>${esc(name || '—')}</td>
+            <td><span class="sev ${sevClass(severity)}">${esc(String(severity || '—').toUpperCase())}</span></td>
+            <td><span class="ctx">${ctx || '—'}</span></td>
+          </tr>`;
+        }).join('');
+      }
+
+      const tbody = document.querySelector('#trend tbody');
+      tbody.innerHTML = trend.slice(-30).reverse().map(row => `
+        <tr>
+          <td>${esc(row.run_id || '—')}</td>
+          <td>${n(row.total_findings)}</td>
+          <td>${n(row.high)}</td>
+          <td>${n(row.medium)}</td>
+          <td>${n(row.low)}</td>
+          <td>${n(row.unknown)}</td>
+        </tr>
+      `).join('');
+    }
+
+    main().catch(err => {
+      document.getElementById('run-meta').textContent = `Failed to load audit data: ${err.message}`;
+    });
+  </script>
+</body>
+</html>
