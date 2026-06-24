@@ -1,13 +1,7 @@
 
-## Elevator Pitch
+# Low Touch auth onboarding
 
-Whether you're one engineer or a hundred, your cloud bill carries waste nobody owns — orphan disks, idle IPs, forgotten VMs. We run a scheduled audit, find each one, and open a pull request with the exact fix and what it'll save. An AI agent flags any captain's-call risk so reviewers know what to look at. You click merge; the fix applies; a post-check verifies. GitHub is the audit trail. No new dashboard, no new vendor.
-
-
-## The dark arts of low touch uptake
-
-### Low Touch auth onboarding
-
+## Brief
 
 The real low-friction bootstrap pattern is vendor consoles, not Terraform:
 
@@ -18,3 +12,10 @@ Bootstrap stays inside the cloud admin's existing session — never crosses our 
 
 So the honest setup story: one click in your cloud console, not "install Terraform, configure credentials, run apply".
 
+
+## Actual implementation
+
+
+```
+
+```
