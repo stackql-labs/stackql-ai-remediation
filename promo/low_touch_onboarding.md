@@ -15,7 +15,101 @@ So the honest setup story: one click in your cloud console, not "install Terrafo
 
 ## Actual implementation
 
+Three artefacts to author + one README. Each artefact is a per-cloud template
+hosted on a public URL; the user clicks a button, deploys it in their own
+console as admin, and we get back identifiers (no secrets).
 
+### AWS — CloudFormation Launch Stack
+
+- `cicd/onboarding/aws/template.yaml`
+  - `AWS::IAM::OIDCProvider` for `token.actions.githubusercontent.com`
+    (`CreateOnlyIfNotExists` — most accounts already have it).
+  - `AWS::IAM::Role` with trust policy conditioned on
+    `token.actions.githubusercontent.com:sub` matching the user's repo, and
+    `:aud == sts.amazonaws.com`.
+  - Managed policy `arn:aws:iam::aws:policy/SecurityAudit` + inline
+    `cloudformation:ListResources/GetResource` for stackql Cloud Control.
+  - `Parameters`: `RepoFullName` (string).
+  - `Outputs`: `RoleArn`.
+- Host the template at a public URL — e.g. a GitHub-Pages-served raw file or
+  a public S3 bucket. CloudFormation accepts an `https://` `templateURL`.
+- README "Launch Stack" link:
+  ```
+  https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://<host>/stackql-audit.yaml&stackName=stackql-audit
+  ```
+- User fills `RepoFullName`, clicks Create. Copies `RoleArn` from Outputs.
+
+### GCP — Cloud Shell paste-run
+
+- `cicd/onboarding/gcp/setup.sh`
+  - `gcloud iam workload-identity-pools create …`
+  - `gcloud iam workload-identity-pools providers create-oidc …` with
+    attribute condition on the GitHub repo claim.
+  - `gcloud iam service-accounts create stackql-audit-sa …`
+  - `gcloud iam service-accounts add-iam-policy-binding …` (SecurityAudit
+    equivalent set: roles/viewer + roles/iam.securityReviewer).
+  - `gcloud iam service-accounts add-iam-policy-binding …` for
+    `roles/iam.workloadIdentityUser` allowing the WIF principal.
+  - Prints `workload-identity-provider` resource name + SA email at the end.
+- README "Open in Cloud Shell" link:
+  ```
+  https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/<owner>/stackql-actions-sandbox&cloudshell_workspace=cicd/onboarding/gcp&cloudshell_open_in_editor=setup.sh
+  ```
+- User reviews the script in Cloud Shell, hits run, copies the two output
+  strings.
+
+### Azure — Deploy to Azure (ARM / Bicep)
+
+- `cicd/onboarding/azure/template.json` (or Bicep compiled to JSON)
+  - `Microsoft.Graph/applications` (app registration)
+  - `Microsoft.Graph/applications/federatedIdentityCredentials` with
+    `subject = repo:<owner>/<repo>:ref:refs/heads/main` (and PR variant
+    if you want PR checks).
+  - `Microsoft.Authorization/roleAssignments` for `Reader` + `Security Reader`
+    at the subscription scope.
+  - `outputs`: `tenantId`, `clientId`, `subscriptionId`.
+- README "Deploy to Azure" link:
+  ```
+  https://portal.azure.com/#create/Microsoft.Template/uri/<urlencoded-https-url-to-template.json>
+  ```
+- User fills the form, deploys, copies the three IDs from the Outputs blade.
+
+### GitHub side — pasting the identifiers back
+
+OIDC has no secret values, only identifiers. Repo **variables** are enough
+(not secrets). Either of:
+
+```bash
+gh variable set STACKQL_AWS_ROLE_ARN             --body 'arn:aws:iam::123:role/stackql-audit'
+gh variable set STACKQL_GCP_WIF_PROVIDER         --body 'projects/123/locations/global/workloadIdentityPools/gh/providers/gh'
+gh variable set STACKQL_GCP_SA_EMAIL             --body 'stackql-audit-sa@project.iam.gserviceaccount.com'
+gh variable set STACKQL_AZURE_TENANT_ID          --body '<guid>'
+gh variable set STACKQL_AZURE_CLIENT_ID          --body '<guid>'
+gh variable set STACKQL_AZURE_SUBSCRIPTION_ID    --body '<guid>'
 ```
 
-```
+…or set them in the repo UI: Settings → Secrets and variables → Actions →
+Variables tab.
+
+Change the workflow file references from `${{ secrets.X }}` to
+`${{ vars.X }}` for the identifier inputs (the existing `STACKQL_ID_FED_*`
+secrets can be renamed and moved to vars in one pass).
+
+### Mutation tier (optional, opt-in later)
+
+Same model, but a second CloudFormation/gcloud/ARM template that creates a
+**static-credential** principal with narrow write perms (delete-only on the
+finops resource types). Output an access key / SA key / client secret, user
+pastes into `gh secret set SANDBOX_*`. Only needed when the user enables
+auto-apply.
+
+### README copy
+
+Three buttons under "Get started":
+
+> 1. Click **Launch Stack** (AWS) / **Open in Cloud Shell** (GCP) / **Deploy to Azure**.
+> 2. Approve in your cloud console.
+> 3. Paste the resulting IDs into your repo's Variables tab.
+> 4. Push a tag. Watch the dashboard fill in.
+
+Setup time target: under 5 minutes per cloud, no Terraform, no creds shipped.

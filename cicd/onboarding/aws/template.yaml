@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  StackQL audit — read-only OIDC role for GitHub Actions.
+  Creates (optionally) the GitHub OIDC identity provider in this account, then
+  an IAM role trusted to be assumed by the specified GitHub repo. The role has
+  SecurityAudit (managed) plus the AWS Cloud Control read permissions stackql
+  uses for aws.ec2_native.* queries. No write permissions; this is the
+  read-only / "see your waste" tier — mutation creds are a separate template.
+
+Parameters:
+  RepoFullName:
+    Type: String
+    Description: 'GitHub repo allowed to assume this role, as owner/repo (e.g. stackql-labs/stackql-actions-sandbox).'
+    AllowedPattern: '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+
+  SubjectPattern:
+    Type: String
+    Description: >
+      OIDC subject claim pattern allowed to assume the role. Default allows all
+      events from the repo (branches, tags, pull_request). Tighten if you want
+      to restrict to e.g. ref:refs/heads/main only.
+    Default: '*'
+
+  RoleName:
+    Type: String
+    Description: 'IAM role name.'
+    Default: 'stackql-audit'
+
+  CreateOIDCProvider:
+    Type: String
+    Description: >
+      Set to 'false' if this account already has the GitHub OIDC provider
+      (token.actions.githubusercontent.com). Most accounts that have ever set
+      up GitHub Actions OIDC already do — check IAM → Identity providers.
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: 'https://token.actions.githubusercontent.com'
+      ClientIdList:
+        - 'sts.amazonaws.com'
+      # Thumbprints are no longer validated for github.com OIDC since 2023, but
+      # CloudFormation still requires the field. Any 40-char hex is accepted.
+      ThumbprintList:
+        - '6938fd4d98bab03faadb97b34396831e3780aea1'
+
+  StackqlAuditRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'
+              StringLike:
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${RepoFullName}:${SubjectPattern}'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/SecurityAudit'
+      Policies:
+        - PolicyName: stackql-cloud-control-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:ListResources'
+                  - 'cloudformation:GetResource'
+                  - 'cloudformation:GetResourceRequestStatus'
+                  - 'cloudformation:ListResourceRequests'
+                Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: 'ARN of the audit role. Paste into the GitHub repo variable STACKQL_AWS_ROLE_ARN.'
+    Value: !GetAtt StackqlAuditRole.Arn
+  AccountId:
+    Description: 'AWS account ID this role lives in.'
+    Value: !Ref AWS::AccountId
+  LaunchedRegion:
+    Description: 'Region the stack was launched in (the role itself is global).'
+    Value: !Ref AWS::Region
