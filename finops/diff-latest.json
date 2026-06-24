@@ -1,0 +1,117 @@
+{
+  "previous_run_id": "2026-06-24T13-29-07Z",
+  "latest_run_id": "2026-06-24T13-29-07Z",
+  "previous_timestamp": 1782307747,
+  "latest_timestamp": 1782307747,
+  "note": "Generic diff metadata. UI should use stable resource IDs when present for exact new/resolved calculation.",
+  "previous": {
+    "finops-aws": [],
+    "finops-azure": [],
+    "finops-gcp": [],
+    "assayed": {
+      "finops-aws": [
+        {
+          "check": "finops-aws/unassociated-eips.yaml",
+          "name": "Unassociated Elastic IPs",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-aws/unattached-volumes.yaml",
+          "name": "Unattached EBS volumes",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ],
+      "finops-azure": [
+        {
+          "check": "finops-azure/unassociated-ips.yaml",
+          "name": "Unassociated public IP addresses",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-azure/unattached-disks.yaml",
+          "name": "Unattached managed disks",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ],
+      "finops-gcp": [
+        {
+          "check": "finops-gcp/unattached-disks.yaml",
+          "name": "Unattached persistent disks",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-gcp/unused-ips.yaml",
+          "name": "Reserved static IPs not in use",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ]
+    }
+  },
+  "latest": {
+    "finops-aws": [],
+    "finops-azure": [],
+    "finops-gcp": [],
+    "assayed": {
+      "finops-aws": [
+        {
+          "check": "finops-aws/unassociated-eips.yaml",
+          "name": "Unassociated Elastic IPs",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-aws/unattached-volumes.yaml",
+          "name": "Unattached EBS volumes",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ],
+      "finops-azure": [
+        {
+          "check": "finops-azure/unassociated-ips.yaml",
+          "name": "Unassociated public IP addresses",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-azure/unattached-disks.yaml",
+          "name": "Unattached managed disks",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ],
+      "finops-gcp": [
+        {
+          "check": "finops-gcp/unattached-disks.yaml",
+          "name": "Unattached persistent disks",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        },
+        {
+          "check": "finops-gcp/unused-ips.yaml",
+          "name": "Reserved static IPs not in use",
+          "severity": "LOW",
+          "count": 0,
+          "status": "clean"
+        }
+      ]
+    }
+  }
+}
