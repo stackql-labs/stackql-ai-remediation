@@ -1,0 +1,32 @@
+{
+  "run_id": "28177887440",
+  "target": "finops-aws",
+  "provider": "aws",
+  "check_id": "aws-finops-unattached-volume",
+  "check_file": "finops-aws/unattached-volumes.yaml",
+  "check_name": "Unattached EBS volumes",
+  "query": "SELECT volumeId, size, status, AvailabilityZone, volumeType, createTime\nFROM aws.ec2_native.volumes\nWHERE region = 'ap-southeast-2'",
+  "severity": "LOW",
+  "category": "waste",
+  "kind": null,
+  "region": "ap-southeast-2",
+  "suggested_remediation": {
+    "type": "delete",
+    "tool": "stackql",
+    "preflight_query": "SELECT volumeId FROM aws.ec2_native.volumes WHERE region = 'ap-southeast-2' AND volumeId = 'vol-003cc7ab19db52a16' AND status = 'available'\n",
+    "sql_query": "DELETE FROM aws.ec2.volumes WHERE region = 'ap-southeast-2' AND VolumeId = 'vol-003cc7ab19db52a16'\n",
+    "command": null,
+    "description": "Delete the unattached EBS volume (snapshot first if its data may be needed)."
+  },
+  "fields": {
+    "AvailabilityZone": "null",
+    "createTime": "2026-01-09T03:07:48.480Z",
+    "size": "1",
+    "status": "available",
+    "volumeId": "vol-003cc7ab19db52a16",
+    "volumeType": "gp2",
+    "region": "ap-southeast-2",
+    "category": "waste",
+    "estimated_monthly_usd": 0.1
+  }
+}
