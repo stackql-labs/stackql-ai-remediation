@@ -1,2 +1,5 @@
 .DS_Store
 .stackql/
+*.py[cmno]
+__pycache__/
+.venv/

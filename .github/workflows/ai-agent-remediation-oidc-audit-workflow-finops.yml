@@ -1,0 +1,286 @@
+name: AI Agent Action post Cloud FinOps Audit (OIDC)
+
+# Zero-touch cloud waste detection: enumerates orphan/unattached resources across
+# AWS, GCP and Azure and costs each from the committed pricing snapshot. OIDC only
+# — no long-lived secrets.
+
+on:
+  schedule:
+    - cron: '20 */12 * * *'
+  push:
+    tags:
+      - 'ai-remediate-finops-oidc*'
+  workflow_dispatch:
+    inputs:
+      aws-region:
+        description: AWS region — seed for the region sweep (finops-aws)
+        required: false
+        default: us-east-1
+      google-org-id:
+        description: GCP organization ID, digits only (finops-gcp project descent)
+        required: false
+        default: '141318256085'
+      azure-mgmt-group:
+        description: Azure management group ID (blank = all tenant subscriptions)
+        required: false
+        default: ''
+      target:
+        description: Space-separated FinOps targets
+        required: false
+        default: finops-aws finops-gcp finops-azure
+      max-nodes:
+        description: 'Budget: max org-nodes visited (-1 = unlimited)'
+        required: false
+        default: '-1'   # weekly waste sweep, Monday 06:00 UTC
+
+jobs:
+  ai-agent-remediation-finops-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write       # required: GitHub OIDC token issuance
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check provider prerequisites
+        id: provider-gate
+        env:
+          REQUESTED_TARGETS: ${{ inputs.target || 'finops-aws finops-gcp finops-azure' }}
+          STACKQL_ID_FED_AWS_ROLE_ARN: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          STACKQL_ID_FED_GCP_SERVICE_ACCOUNT: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          STACKQL_ID_FED_AZURE_TENANT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          STACKQL_ID_FED_AZURE_CLIENT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          AZURE_SUB_ID: ${{ secrets.AZURE_SUB_ID }}
+        run: bash cicd/scripts/provider_gate.sh oidc
+
+      - uses: stackql/stackql-audit-action/actions/oidc@v0.11   # pin a release that includes the finops-* targets
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
+        with:
+          target: ${{ steps.provider-gate.outputs.effective_targets }}
+          # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
+          aws-role-arn: ${{ steps.provider-gate.outputs.aws_enabled == 'true' && secrets.STACKQL_ID_FED_AWS_ROLE_ARN || '' }}
+          aws-region: ${{ inputs.aws-region || 'us-east-1' }}
+          # GCP (Workload Identity Federation -> SA impersonation)
+          gcp-workload-identity-provider: ${{ steps.provider-gate.outputs.gcp_enabled == 'true' && secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER || '' }}
+          gcp-sa-email: ${{ steps.provider-gate.outputs.gcp_enabled == 'true' && secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT || '' }}
+          google-org-id: ${{ inputs.google-org-id || secrets.GCP_ORG_ID || '' }}
+          # Azure (federated identity, no client secret — finops needs no Graph)
+          azure-tenant-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.STACKQL_ID_FED_AZURE_TENANT_ID || '' }}
+          azure-client-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.STACKQL_ID_FED_AZURE_CLIENT_ID || '' }}
+          azure-subscription-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.AZURE_SUB_ID || '' }}
+          azure-mgmt-group: ${{ inputs.azure-mgmt-group }}
+          # Budget + output
+          max-nodes: ${{ inputs.max-nodes || '-1' }}
+          timeout-seconds: '1800'
+          # Findings + estimated_monthly_usd are uploaded as workflow artifacts
+          # (deep-audit-data-streams: *-findings.jsonl + summary.json). No outbound
+          # credentials — read-only, OIDC-only, nothing leaves GitHub.
+          upload-logs: 'true'
+
+      - name: All providers skipped
+        if: steps.provider-gate.outputs.has_effective_targets != 'true'
+        run: |
+          echo "::warning::No runnable providers remain after prerequisite checks. See 'Provider Prerequisite Check' in the step summary for missing secrets."
+
+      - uses: actions/download-artifact@v4
+        id: download-data-streams
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
+        with:
+          name: deep-audit-data-streams
+          path: deep-audit-data-streams
+
+      - name: Locate findings.json
+        id: findings
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
+        run: |
+          set -euo pipefail
+          f="$(find "$GITHUB_WORKSPACE/deep-audit-data-streams" -name findings.json -type f | head -n 1)"
+          if [ -z "$f" ]; then
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no findings.json found — nothing to remediate"
+            exit 0
+          fi
+          n="$(jq '.findings | length' "$f")"
+          echo "findings_path=$f" >> "$GITHUB_OUTPUT"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -gt 0 ]; then
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$n finding(s) at $f"
+          else
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::findings.json present but empty — nothing to remediate"
+          fi
+
+      - name: Agent generates proposals (per-finding)
+        if: steps.findings.outputs.has_findings == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          allowed_bots: 'github-actions'
+          claude_args: "--allowedTools Read,Write,Edit,Bash --permission-mode acceptEdits"
+          prompt: |
+            Read ${{ steps.findings.outputs.findings_path }} — JSON with a
+            `findings` array. Each entry has a `suggested_remediation` block
+            containing `preflight_query` and `sql_query` (both fully
+            substituted upstream).
+
+            For each finding (index i) create a directory:
+              remediations/proposed/${{ github.run_id }}-${{ github.run_attempt }}/<i>-<check_id>-<resource_id>/
+
+            where <resource_id> is the most specific identifier present in
+            .fields (volumeId, instanceId, publicIp, address, name — first one
+            that exists). Sanitise the slug to [a-zA-Z0-9._-].
+
+            Write exactly four files in each directory:
+              - finding.json     : the single object .findings[i] verbatim
+              - preflight.sql    : the EXACT string from .suggested_remediation.preflight_query, no edits, no comments
+              - remediation.sql  : the EXACT string from .suggested_remediation.sql_query, no edits, no comments
+              - rationale.md     : 4–8 sentences for the human reviewer covering:
+                  (a) what is being removed and where
+                  (b) confidence level (high / medium / low) with one-line justification
+                  (c) any "captain's call" flag — risks, dependencies, or context
+                      that a deterministic check can't see (e.g. tag matches a
+                      prod workload, resource is unusually large/old, name
+                      pattern suggests a shared resource)
+                  (d) estimated monthly saving if present in .fields.estimated_monthly_usd
+
+            preflight.sql and remediation.sql MUST be byte-for-byte copies of
+            the corresponding upstream strings — a guardrail step verifies this
+            and any divergence will be flagged on the PR.
+
+            Do not modify any files outside remediations/proposed/.
+            Do not execute remediation. Do not open PRs.
+
+      - name: Guardrail — SQL matches upstream canonical
+        if: steps.findings.outputs.has_findings == 'true'
+        env:
+          FINDINGS_JSON: ${{ steps.findings.outputs.findings_path }}
+          RUN_ID:        ${{ github.run_id }}
+          RUN_ATTEMPT:   ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          root="remediations/proposed/${RUN_ID}-${RUN_ATTEMPT}"
+          summary="$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Guardrail — agent SQL vs upstream canonical"
+            echo
+            echo "| dir | preflight | remediation |"
+            echo "| --- | --- | --- |"
+          } >> "$summary"
+
+          # Normalise: strip SQL comments, collapse all whitespace to single spaces.
+          norm() { sed 's|--[^\n]*||g' | tr '\n' ' ' | tr -s ' \t' ' ' | sed 's/^ *//;s/ *$//'; }
+
+          passed=0; failed=0
+          n=$(jq '.findings | length' "$FINDINGS_JSON")
+          for i in $(seq 0 $((n-1))); do
+            check_id=$(jq -r ".findings[$i].check_id" "$FINDINGS_JSON")
+            expected_pre=$(jq -r ".findings[$i].suggested_remediation.preflight_query // empty" "$FINDINGS_JSON" | norm)
+            expected_rem=$(jq -r ".findings[$i].suggested_remediation.sql_query // empty"      "$FINDINGS_JSON" | norm)
+            # Find this finding's directory (the agent chose the slug)
+            dir=$(ls -d "$root"/${i}-* 2>/dev/null | head -1)
+            if [ -z "$dir" ]; then
+              echo "::warning::guardrail: no directory written for finding $i ($check_id)"
+              printf '| (missing finding %s) | — | — |\n' "$i" >> "$summary"
+              failed=$((failed+1)); continue
+            fi
+            actual_pre=$(norm < "$dir/preflight.sql"   2>/dev/null)
+            actual_rem=$(norm < "$dir/remediation.sql" 2>/dev/null)
+
+            pre_ok="OK"; [ "$actual_pre" = "$expected_pre" ] || pre_ok="MISMATCH"
+            rem_ok="OK"; [ "$actual_rem" = "$expected_rem" ] || rem_ok="MISMATCH"
+
+            if [ "$pre_ok" = "OK" ] && [ "$rem_ok" = "OK" ]; then
+              passed=$((passed+1))
+            else
+              failed=$((failed+1))
+              echo "::warning::guardrail mismatch in $dir — preflight=$pre_ok remediation=$rem_ok"
+              echo "::group::expected vs actual for $dir"
+              echo "--- expected preflight ---"; printf '%s\n' "$expected_pre"
+              echo "--- actual   preflight ---"; printf '%s\n' "$actual_pre"
+              echo "--- expected remediation ---"; printf '%s\n' "$expected_rem"
+              echo "--- actual   remediation ---"; printf '%s\n' "$actual_rem"
+              echo "::endgroup::"
+            fi
+            printf '| %s | %s | %s |\n' "$dir" "$pre_ok" "$rem_ok" >> "$summary"
+          done
+
+          {
+            echo
+            echo "**Result: passed=$passed failed=$failed**"
+            echo
+            echo "_v1 guardrail is observe-only: PRs still open for failing entries. Reviewers should check the per-directory file vs the finding's \`suggested_remediation\` before merging._"
+          } >> "$summary"
+          echo "::notice::guardrail: passed=$passed failed=$failed"
+
+      - name: Open one PR per proposal
+        if: steps.findings.outputs.has_findings == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          BASE_REF: main
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Embed the workflow token in the origin URL so fetch/push work
+          # regardless of whether actions/checkout's extraheader is honored.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          root="remediations/proposed/${RUN_ID}-${RUN_ATTEMPT}"
+          if [ ! -d "$root" ]; then
+            echo "::warning::no proposals generated at $root"
+            exit 0
+          fi
+
+          # Ensure we have the base ref locally so worktrees can branch from it.
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+
+          opened=0
+          for dir in "$root"/*/; do
+            [ -d "$dir" ] || continue
+            slug="$(basename "$dir")"
+            branch="remediation/${RUN_ID}-${RUN_ATTEMPT}-${slug}"
+            worktree="$RUNNER_TEMP/wt-${RUN_ID}-${RUN_ATTEMPT}-${slug}"
+
+            # Fresh branch off the base ref, isolated from the main checkout.
+            # Re-runs use a new RUN_ID (or RUN_ATTEMPT) → branch is unique →
+            # GitHub does not collapse onto an existing PR, by design.
+            git worktree add -B "$branch" "$worktree" "origin/${BASE_REF}"
+            mkdir -p "$worktree/$(dirname "$dir")"
+            cp -R "$dir" "$worktree/$(dirname "$dir")/"
+
+            git -C "$worktree" add -- "$dir"
+            if git -C "$worktree" diff --cached --quiet; then
+              echo "::warning::empty diff for $slug, skipping"
+              git worktree remove --force "$worktree"
+              continue
+            fi
+            git -C "$worktree" commit -m "Propose remediation: ${slug} (run ${RUN_ID}.${RUN_ATTEMPT})"
+            git -C "$worktree" push -u origin "$branch"
+            git worktree remove --force "$worktree"
+
+            gh pr create \
+              --base "${BASE_REF}" \
+              --head "$branch" \
+              --title "Remediate ${slug} (run ${RUN_ID}.${RUN_ATTEMPT})" \
+              --body "Automated remediation proposal for one finding from audit run \`${RUN_ID}\` (attempt ${RUN_ATTEMPT}).
+
+          Review the artefacts in [\`${dir}\`](./${dir}):
+          - \`finding.json\` — the source finding
+          - \`preflight.sql\` — verifies the resource still matches the original check before any change
+          - \`remediation.sql\` — the actual disposal statement
+          - \`rationale.md\` — why this is safe and what it saves
+
+          Branch is keyed by \`run_id.run_attempt.slug\`, so re-running this workflow opens fresh PRs rather than amending or eliding existing ones."
+
+            opened=$((opened + 1))
+          done
+
+          echo "::notice::opened $opened remediation PR(s)"
