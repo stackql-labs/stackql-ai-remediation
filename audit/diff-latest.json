@@ -1,8 +1,8 @@
 {
-  "previous_run_id": "2026-06-24T18-32-55Z",
-  "latest_run_id": "2026-06-25T00-30-21Z",
-  "previous_timestamp": 1782325975,
-  "latest_timestamp": 1782347421,
+  "previous_run_id": "2026-06-25T00-30-21Z",
+  "latest_run_id": "2026-06-25T07-07-00Z",
+  "previous_timestamp": 1782347421,
+  "latest_timestamp": 1782371220,
   "note": "Generic diff metadata. UI should use stable finding IDs when present for exact new/resolved calculation.",
   "previous": {},
   "latest": {}
