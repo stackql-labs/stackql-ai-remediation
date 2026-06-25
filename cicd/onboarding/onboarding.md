@@ -225,19 +225,8 @@ The output table prints two ARNs — paste both into your fork's **Settings → 
 
   eg:
   ```bash
-  curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/gcp/setup.sh -o /tmp/s.sh && PROJECT_ID=stackql-demo REPO=stackql-labs/stackql-ai-remediation bash /tmp/s.sh
-
-Done. Paste these into your GitHub repo (Settings → Secrets and variables → Actions → Variables):
-
-  STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER  =  projects/405888094473/locations/global/workloadIdentityPools/github-actions/providers/github
-  STACKQL_ID_FED_GCP_SERVICE_ACCOUNT             =  stackql-audit-sa@stackql-demo.iam.gserviceaccount.com
-  STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT      =  stackql-mutate-sa@stackql-demo.iam.gserviceaccount.com
-
-or via gh CLI:
-  gh variable set STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER --body 'projects/405888094473/locations/global/workloadIdentityPools/github-actions/providers/github'
-  gh variable set STACKQL_ID_FED_GCP_SERVICE_ACCOUNT            --body 'stackql-audit-sa@stackql-demo.iam.gserviceaccount.com'
-  gh variable set STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT     --body 'stackql-mutate-sa@stackql-demo.iam.gserviceaccount.com'
-
+  curl -sL https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/main/cicd/onboarding/gcp/setup.sh -o /tmp/s.sh \
+  && PROJECT_ID=stackql-demo REPO=stackql-labs/stackql-ai-remediation bash /tmp/s.sh
   ```
   (or run `bash setup.sh` and answer the two prompts).
 - Script prints three values at the end. In your fork → Variables, add:
@@ -246,6 +235,41 @@ or via gh CLI:
   - `STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT`     = the mutate service account email (read + write; main-branch trust only)
 
 ### 5. Azure — optional, skip if you don't run on Azure
+
+**One-paste Cloud Shell bootstrap (recommended)**
+
+Paste this into Azure Cloud Shell, then change only the first three lines:
+
+```bash
+OWNER='stackql-labs'
+REPO_NAME='stackql-ai-remediation'
+SUBSCRIPTION_ID='YOUR_SUBSCRIPTION_ID'
+# Optional: set for org-wide scope; leave empty for subscription scope
+MGMT_GROUP_ID=''
+
+set -euo pipefail
+
+REPO="${OWNER}/${REPO_NAME}"
+SCRIPT_URL="https://raw.githubusercontent.com/${OWNER}/${REPO_NAME}/main/cicd/onboarding/azure/setup.sh"
+
+az account set --subscription "${SUBSCRIPTION_ID}"
+
+curl -fsSL "${SCRIPT_URL}" -o /tmp/stackql-azure-setup.sh
+chmod +x /tmp/stackql-azure-setup.sh
+
+if [ -n "${MGMT_GROUP_ID}" ]; then
+  REPO="${REPO}" MGMT_GROUP_ID="${MGMT_GROUP_ID}" bash /tmp/stackql-azure-setup.sh
+else
+  REPO="${REPO}" bash /tmp/stackql-azure-setup.sh
+fi
+```
+
+Expected output includes these values to add in your GitHub repo Variables:
+
+- `STACKQL_ID_FED_AZURE_TENANT_ID`
+- `AZURE_INTEGRATION_TESTING_SUB_ID`
+- `STACKQL_ID_FED_AZURE_CLIENT_ID`
+- `STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID`
 
 - Click the **Deploy to Azure** button:
   ```
