@@ -25,5 +25,14 @@
     "aws_usd": 0,
     "gcp_usd": 0,
     "azure_usd": 0
+  },
+  {
+    "run_id": "2026-06-25T07-56-45Z",
+    "timestamp": 1782374205,
+    "total_findings": 0,
+    "total_usd": 0,
+    "aws_usd": 0,
+    "gcp_usd": 0,
+    "azure_usd": 0
   }
 ]
