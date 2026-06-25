@@ -243,14 +243,14 @@ Paste this into Azure Cloud Shell, then change only the first three lines:
 ```bash
 OWNER='stackql-labs'
 REPO_NAME='stackql-ai-remediation'
-SUBSCRIPTION_ID='YOUR_SUBSCRIPTION_ID'
+SUBSCRIPTION_ID='631d1c6d-2a65-43e7-93c2-688bfe4e1468'
 # Optional: set for org-wide scope; leave empty for subscription scope
 MGMT_GROUP_ID=''
 
 set -euo pipefail
 
 REPO="${OWNER}/${REPO_NAME}"
-SCRIPT_URL="https://raw.githubusercontent.com/${OWNER}/${REPO_NAME}/main/cicd/onboarding/azure/setup.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/stackql-labs/stackql-ai-remediation/refs/heads/feature/lightweight-walkthrough/cicd/onboarding/azure/setup.sh"
 
 az account set --subscription "${SUBSCRIPTION_ID}"
 
@@ -262,6 +262,21 @@ if [ -n "${MGMT_GROUP_ID}" ]; then
 else
   REPO="${REPO}" bash /tmp/stackql-azure-setup.sh
 fi
+```
+
+```
+✓ Done. Paste these into your GitHub repo (Settings → Secrets and variables → Actions → Variables):
+
+  STACKQL_ID_FED_AZURE_TENANT_ID          =  e49b5ab7-17be-463f-b872-a6c13308d55b
+  AZURE_INTEGRATION_TESTING_SUB_ID        =  631d1c6d-2a65-43e7-93c2-688bfe4e1468
+  STACKQL_ID_FED_AZURE_CLIENT_ID          =  76182c05-1633-44db-af63-60d268b8d28b
+  STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID   =  ef5da92a-ff6d-49fb-912e-9f18a49f03bf
+
+or via gh CLI:
+  gh variable set STACKQL_ID_FED_AZURE_TENANT_ID        --body 'e49b5ab7-17be-463f-b872-a6c13308d55b'
+  gh variable set AZURE_INTEGRATION_TESTING_SUB_ID      --body '631d1c6d-2a65-43e7-93c2-688bfe4e1468'
+  gh variable set STACKQL_ID_FED_AZURE_CLIENT_ID        --body '76182c05-1633-44db-af63-60d268b8d28b'
+  gh variable set STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID --body 'ef5da92a-ff6d-49fb-912e-9f18a49f03bf'
 ```
 
 Expected output includes these values to add in your GitHub repo Variables:
