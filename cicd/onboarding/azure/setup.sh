@@ -92,13 +92,13 @@ cat <<EOF
 ✓ Done. Paste these into your GitHub repo (Settings → Secrets and variables → Actions → Variables):
 
   STACKQL_ID_FED_AZURE_TENANT_ID          =  ${TENANT_ID}
-  AZURE_INTEGRATION_TESTING_SUB_ID        =  ${SUBSCRIPTION_ID}
+  AZURE_SUB_ID                            =  ${SUBSCRIPTION_ID}
   STACKQL_ID_FED_AZURE_CLIENT_ID          =  ${AUDIT_APP_ID}
   STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID   =  ${MUTATE_APP_ID}
 
 or via gh CLI:
   gh variable set STACKQL_ID_FED_AZURE_TENANT_ID        --body '${TENANT_ID}'
-  gh variable set AZURE_INTEGRATION_TESTING_SUB_ID      --body '${SUBSCRIPTION_ID}'
+  gh variable set AZURE_SUB_ID                          --body '${SUBSCRIPTION_ID}'
   gh variable set STACKQL_ID_FED_AZURE_CLIENT_ID        --body '${AUDIT_APP_ID}'
   gh variable set STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID --body '${MUTATE_APP_ID}'
 EOF

@@ -268,13 +268,13 @@ fi
 ✓ Done. Paste these into your GitHub repo (Settings → Secrets and variables → Actions → Variables):
 
   STACKQL_ID_FED_AZURE_TENANT_ID          =  e49b5ab7-17be-463f-b872-a6c13308d55b
-  AZURE_INTEGRATION_TESTING_SUB_ID        =  631d1c6d-2a65-43e7-93c2-688bfe4e1468
+  AZURE_SUB_ID                            =  631d1c6d-2a65-43e7-93c2-688bfe4e1468
   STACKQL_ID_FED_AZURE_CLIENT_ID          =  76182c05-1633-44db-af63-60d268b8d28b
   STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID   =  ef5da92a-ff6d-49fb-912e-9f18a49f03bf
 
 or via gh CLI:
   gh variable set STACKQL_ID_FED_AZURE_TENANT_ID        --body 'e49b5ab7-17be-463f-b872-a6c13308d55b'
-  gh variable set AZURE_INTEGRATION_TESTING_SUB_ID      --body '631d1c6d-2a65-43e7-93c2-688bfe4e1468'
+  gh variable set AZURE_SUB_ID                          --body '631d1c6d-2a65-43e7-93c2-688bfe4e1468'
   gh variable set STACKQL_ID_FED_AZURE_CLIENT_ID        --body '76182c05-1633-44db-af63-60d268b8d28b'
   gh variable set STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID --body 'ef5da92a-ff6d-49fb-912e-9f18a49f03bf'
 ```
@@ -282,7 +282,7 @@ or via gh CLI:
 Expected output includes these values to add in your GitHub repo Variables:
 
 - `STACKQL_ID_FED_AZURE_TENANT_ID`
-- `AZURE_INTEGRATION_TESTING_SUB_ID`
+- `AZURE_SUB_ID`
 - `STACKQL_ID_FED_AZURE_CLIENT_ID`
 - `STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID`
 
@@ -302,9 +302,18 @@ Expected output includes these values to add in your GitHub repo Variables:
 - On the deployment's **Outputs** blade, copy `tenantId`, `subscriptionId`, `clientId`, and `mutateClientId`.
 - In your fork → Variables, add:
   - `STACKQL_ID_FED_AZURE_TENANT_ID`         = the tenantId
-  - `AZURE_INTEGRATION_TESTING_SUB_ID`       = the subscriptionId
+  - `AZURE_SUB_ID`                            = the subscriptionId
   - `STACKQL_ID_FED_AZURE_CLIENT_ID`         = the clientId (audit identity — read-only; federated for main + pull_request subjects)
   - `STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID`  = the mutateClientId (mutate identity — read + delete on finops resources; federated for main-branch context only)
+
+Following all of the credentials setup, then your Github actions secrets should appear like Figure S-1.
+
+
+![Secrets required](/assets/img/secrets-required.png)
+
+**Figure S-1**: Secrets complement required.
+
+---
 
 ### 6. Trigger the first run
 
