@@ -81,10 +81,35 @@ jobs:
           printf '%s\n' "${rem[@]}" > "$RUNNER_TEMP/remediation-files.txt"
           printf '::notice::will apply: %s\n' "${rem[@]}"
 
-      - name: Preflight (inline stackql, OIDC)
+      - name: Check provider prerequisites
         if: steps.detect.outputs.found == 'true'
+        id: provider-gate
+        env:
+          REQUESTED_TARGETS: finops-aws finops-gcp finops-azure
+          SANDBOX_AWS_ACCESS_KEY_ID: ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
+          SANDBOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
+          SANDBOX_GOOGLE_CREDENTIALS: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
+          SANDBOX_AZURE_TENANT_ID: ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
+          SANDBOX_AZURE_CLIENT_ID: ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
+          SANDBOX_AZURE_CLIENT_SECRET: ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
+          SANDBOX_AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
+        run: bash cicd/scripts/provider_gate.sh sandbox
+
+      - name: All providers skipped
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets != 'true'
+        run: |
+          echo "::warning::No runnable providers remain after prerequisite checks. See 'Provider Prerequisite Check' in the step summary for missing secrets."
+
+      - name: Preflight (inline stackql, OIDC)
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         env:
           REM_FILES: ${{ runner.temp }}/remediation-files.txt
+          AWS_ENABLED: ${{ steps.provider-gate.outputs.aws_enabled }}
+          GCP_ENABLED: ${{ steps.provider-gate.outputs.gcp_enabled }}
+          AZURE_ENABLED: ${{ steps.provider-gate.outputs.azure_enabled }}
+          AWS_RESTORE: ${{ steps.provider-gate.outputs.aws_restore }}
+          GCP_RESTORE: ${{ steps.provider-gate.outputs.gcp_restore }}
+          AZURE_RESTORE: ${{ steps.provider-gate.outputs.azure_restore }}
         run: |
           set -uo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -94,9 +119,40 @@ jobs:
 
 
           fail=0
+          skipped=0
           while IFS= read -r r; do
             f="$(dirname "$r")/finding.json"
             [ -f "$f" ] || continue
+
+            provider="$(jq -r '.provider // empty' "$f")"
+            if [ -z "$provider" ]; then
+              target="$(jq -r '.target // empty' "$f")"
+              provider="${target#finops-}"
+            fi
+            case "$provider" in
+              aws)
+                if [ "$AWS_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=aws): prerequisites missing. To restore set: $AWS_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              gcp)
+                if [ "$GCP_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=gcp): prerequisites missing. To restore set: $GCP_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              azure)
+                if [ "$AZURE_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=azure): prerequisites missing. To restore set: $AZURE_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+            esac
+
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
             out="$(stackql exec --output json "$q" 2>&1)"
@@ -110,6 +166,9 @@ jobs:
               fail=$((fail+1))
             fi
           done < "$REM_FILES"
+          if [ "$skipped" -gt 0 ]; then
+            echo "::notice::preflight skipped $skipped finding(s) because provider prerequisites are missing."
+          fi
           if [ "$fail" -gt 0 ]; then
             echo "::error::Preflight failed on merge — refusing to mutate. Drift since PR approval likely."
             exit 1
@@ -131,7 +190,7 @@ jobs:
       #     credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
 
       - name: Install gcloud
-        if: steps.detect.outputs.found == 'true'
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       # - name: Configure Azure creds (static, SANDBOX)
@@ -148,7 +207,7 @@ jobs:
 
       # --- install stackql (mutating creds set by the SANDBOX auth steps) ---
       - name: Install stackql + providers
-        if: steps.detect.outputs.found == 'true'
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
@@ -165,11 +224,17 @@ jobs:
       # Auth: AWS via env vars (configure-aws-credentials), GCP via the SA
       # JSON env var, Azure via the SP env vars. Nothing else; no CLI.
       - name: Apply (stackql)
-        if: steps.detect.outputs.found == 'true'
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         id: apply
         env:
           REM_FILES: ${{ runner.temp }}/remediation-files.txt
           RESULTS_JSON: ${{ runner.temp }}/apply-results.json
+          AWS_ENABLED: ${{ steps.provider-gate.outputs.aws_enabled }}
+          GCP_ENABLED: ${{ steps.provider-gate.outputs.gcp_enabled }}
+          AZURE_ENABLED: ${{ steps.provider-gate.outputs.azure_enabled }}
+          AWS_RESTORE: ${{ steps.provider-gate.outputs.aws_restore }}
+          GCP_RESTORE: ${{ steps.provider-gate.outputs.gcp_restore }}
+          AZURE_RESTORE: ${{ steps.provider-gate.outputs.azure_restore }}
           # SANDBOX static creds — stackql picks AWS up from env automatically,
           # GCP from the application-default credentials file, Azure from SP env.
           GOOGLE_CREDENTIALS:   ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
@@ -196,9 +261,47 @@ jobs:
               continue
             fi
             check_id="$(jq -r '.check_id' "$finding")"
+            provider="$(jq -r '.provider // empty' "$finding")"
+            if [ -z "$provider" ]; then
+              target="$(jq -r '.target // empty' "$finding")"
+              provider="${target#finops-}"
+            fi
             sql="$(jq -r '.suggested_remediation.sql_query // empty' "$finding")"
             stdout_log="$dir/_apply.stdout.log"
             stderr_log="$dir/_apply.stderr.log"
+
+            case "$provider" in
+              aws)
+                if [ "$AWS_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $dir (provider=aws): prerequisites missing. To restore set: $AWS_RESTORE"
+                  skipped=$((skipped+1))
+                  jq -n --arg dir "$dir" --arg cid "$check_id" --arg r "$AWS_RESTORE" \
+                    '{dir:$dir, check_id:$cid, status:"skipped", reason:("missing provider prerequisites: " + $r)}' \
+                    >> "$RESULTS_JSON.tmp"
+                  continue
+                fi
+                ;;
+              gcp)
+                if [ "$GCP_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $dir (provider=gcp): prerequisites missing. To restore set: $GCP_RESTORE"
+                  skipped=$((skipped+1))
+                  jq -n --arg dir "$dir" --arg cid "$check_id" --arg r "$GCP_RESTORE" \
+                    '{dir:$dir, check_id:$cid, status:"skipped", reason:("missing provider prerequisites: " + $r)}' \
+                    >> "$RESULTS_JSON.tmp"
+                  continue
+                fi
+                ;;
+              azure)
+                if [ "$AZURE_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $dir (provider=azure): prerequisites missing. To restore set: $AZURE_RESTORE"
+                  skipped=$((skipped+1))
+                  jq -n --arg dir "$dir" --arg cid "$check_id" --arg r "$AZURE_RESTORE" \
+                    '{dir:$dir, check_id:$cid, status:"skipped", reason:("missing provider prerequisites: " + $r)}' \
+                    >> "$RESULTS_JSON.tmp"
+                  continue
+                fi
+                ;;
+            esac
 
             if [ -z "$sql" ]; then
               echo "::warning::no suggested_remediation.sql_query for $check_id at $dir; skipping"
@@ -277,9 +380,15 @@ jobs:
           fi
 
       - name: Post apply check (inline stackql, OIDC)
-        if: steps.detect.outputs.found == 'true'
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         env:
           REM_FILES: ${{ runner.temp }}/remediation-files.txt
+          AWS_ENABLED: ${{ steps.provider-gate.outputs.aws_enabled }}
+          GCP_ENABLED: ${{ steps.provider-gate.outputs.gcp_enabled }}
+          AZURE_ENABLED: ${{ steps.provider-gate.outputs.azure_enabled }}
+          AWS_RESTORE: ${{ steps.provider-gate.outputs.aws_restore }}
+          GCP_RESTORE: ${{ steps.provider-gate.outputs.gcp_restore }}
+          AZURE_RESTORE: ${{ steps.provider-gate.outputs.azure_restore }}
         run: |
           set -uo pipefail
           sleep 10  # eventual consistency buffer — most APIs are eventually consistent on deletes; this mitigates flakes without a full retry loop
@@ -289,9 +398,40 @@ jobs:
           stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
 
           fail=0
+          skipped=0
           while IFS= read -r r; do
             f="$(dirname "$r")/finding.json"
             [ -f "$f" ] || continue
+
+            provider="$(jq -r '.provider // empty' "$f")"
+            if [ -z "$provider" ]; then
+              target="$(jq -r '.target // empty' "$f")"
+              provider="${target#finops-}"
+            fi
+            case "$provider" in
+              aws)
+                if [ "$AWS_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=aws): prerequisites missing. To restore set: $AWS_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              gcp)
+                if [ "$GCP_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=gcp): prerequisites missing. To restore set: $GCP_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              azure)
+                if [ "$AZURE_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=azure): prerequisites missing. To restore set: $AZURE_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+            esac
+
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
             out="$(stackql exec --output json "$q" 2>&1)"
@@ -306,6 +446,9 @@ jobs:
               fail=$((fail+1))
             fi
           done < "$REM_FILES"
+          if [ "$skipped" -gt 0 ]; then
+            echo "::notice::post-apply skipped $skipped finding(s) because provider prerequisites are missing."
+          fi
           if [ "$fail" -gt 0 ]; then
             echo "::error::Post-apply check failed — resource(s) still present after merge."
             exit 1

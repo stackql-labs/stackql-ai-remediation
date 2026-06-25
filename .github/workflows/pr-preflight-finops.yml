@@ -23,18 +23,33 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Check provider prerequisites
+        id: provider-gate
+        env:
+          REQUESTED_TARGETS: finops-aws finops-gcp finops-azure
+          STACKQL_ID_FED_AWS_ROLE_ARN: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          STACKQL_ID_FED_GCP_SERVICE_ACCOUNT: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          STACKQL_ID_FED_AZURE_TENANT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          STACKQL_ID_FED_AZURE_CLIENT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          AZURE_SUB_ID: ${{ secrets.AZURE_SUB_ID }}
+        run: bash cicd/scripts/provider_gate.sh oidc
+
       - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.provider-gate.outputs.aws_enabled == 'true'
         with:
           role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
           aws-region: us-east-1
 
       - uses: google-github-actions/auth@v2
+        if: steps.provider-gate.outputs.gcp_enabled == 'true'
         with:
           workload_identity_provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
           token_format: access_token
 
       - uses: azure/login@v2
+        if: steps.provider-gate.outputs.azure_enabled == 'true'
         with:
           tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
           client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
@@ -45,6 +60,12 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AWS_ENABLED: ${{ steps.provider-gate.outputs.aws_enabled }}
+          GCP_ENABLED: ${{ steps.provider-gate.outputs.gcp_enabled }}
+          AZURE_ENABLED: ${{ steps.provider-gate.outputs.azure_enabled }}
+          AWS_RESTORE: ${{ steps.provider-gate.outputs.aws_restore }}
+          GCP_RESTORE: ${{ steps.provider-gate.outputs.gcp_restore }}
+          AZURE_RESTORE: ${{ steps.provider-gate.outputs.azure_restore }}
         run: |
           set -uo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -62,12 +83,43 @@ jobs:
           AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
 
           fail=0
+          skipped=0
           mapfile -t findings < <(
             git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- \
               'remediations/proposed/**/finding.json'
           )
           for f in "${findings[@]}"; do
             [ -f "$f" ] || continue
+
+            provider="$(jq -r '.provider // empty' "$f")"
+            if [ -z "$provider" ]; then
+              target="$(jq -r '.target // empty' "$f")"
+              provider="${target#finops-}"
+            fi
+            case "$provider" in
+              aws)
+                if [ "$AWS_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=aws): prerequisites missing. To restore set: $AWS_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              gcp)
+                if [ "$GCP_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=gcp): prerequisites missing. To restore set: $GCP_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+              azure)
+                if [ "$AZURE_ENABLED" != "true" ]; then
+                  echo "::warning::SKIP $f (provider=azure): prerequisites missing. To restore set: $AZURE_RESTORE"
+                  skipped=$((skipped+1))
+                  continue
+                fi
+                ;;
+            esac
+
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
             out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
@@ -82,4 +134,7 @@ jobs:
               fail=$((fail+1))
             fi
           done
+          if [ "$skipped" -gt 0 ]; then
+            echo "::notice::preflight skipped $skipped finding(s) because provider prerequisites are missing."
+          fi
           exit "$fail"

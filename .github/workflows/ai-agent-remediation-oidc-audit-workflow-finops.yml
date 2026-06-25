@@ -43,20 +43,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check provider prerequisites
+        id: provider-gate
+        env:
+          REQUESTED_TARGETS: ${{ inputs.target || 'finops-aws finops-gcp finops-azure' }}
+          STACKQL_ID_FED_AWS_ROLE_ARN: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          STACKQL_ID_FED_GCP_SERVICE_ACCOUNT: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          STACKQL_ID_FED_AZURE_TENANT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          STACKQL_ID_FED_AZURE_CLIENT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
+          AZURE_SUB_ID: ${{ secrets.AZURE_SUB_ID }}
+        run: bash cicd/scripts/provider_gate.sh oidc
+
       - uses: stackql/stackql-audit-action/actions/oidc@v0.11   # pin a release that includes the finops-* targets
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
         with:
-          target: ${{ inputs.target || 'finops-aws finops-gcp finops-azure' }}
+          target: ${{ steps.provider-gate.outputs.effective_targets }}
           # AWS (OIDC -> sts:AssumeRoleWithWebIdentity)
-          aws-role-arn: ${{ secrets.STACKQL_ID_FED_AWS_ROLE_ARN }}
+          aws-role-arn: ${{ steps.provider-gate.outputs.aws_enabled == 'true' && secrets.STACKQL_ID_FED_AWS_ROLE_ARN || '' }}
           aws-region: ${{ inputs.aws-region || 'us-east-1' }}
           # GCP (Workload Identity Federation -> SA impersonation)
-          gcp-workload-identity-provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          gcp-sa-email: ${{ secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT }}
+          gcp-workload-identity-provider: ${{ steps.provider-gate.outputs.gcp_enabled == 'true' && secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER || '' }}
+          gcp-sa-email: ${{ steps.provider-gate.outputs.gcp_enabled == 'true' && secrets.STACKQL_ID_FED_GCP_SERVICE_ACCOUNT || '' }}
           google-org-id: ${{ inputs.google-org-id || secrets.GCP_ORG_ID || '' }}
           # Azure (federated identity, no client secret — finops needs no Graph)
-          azure-tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.STACKQL_ID_FED_AZURE_CLIENT_ID }}
-          azure-subscription-id: ${{ secrets.AZURE_SUB_ID }}
+          azure-tenant-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.STACKQL_ID_FED_AZURE_TENANT_ID || '' }}
+          azure-client-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.STACKQL_ID_FED_AZURE_CLIENT_ID || '' }}
+          azure-subscription-id: ${{ steps.provider-gate.outputs.azure_enabled == 'true' && secrets.AZURE_SUB_ID || '' }}
           azure-mgmt-group: ${{ inputs.azure-mgmt-group }}
           # Budget + output
           max-nodes: ${{ inputs.max-nodes || '-1' }}
@@ -66,14 +79,21 @@ jobs:
           # credentials — read-only, OIDC-only, nothing leaves GitHub.
           upload-logs: 'true'
 
+      - name: All providers skipped
+        if: steps.provider-gate.outputs.has_effective_targets != 'true'
+        run: |
+          echo "::warning::No runnable providers remain after prerequisite checks. See 'Provider Prerequisite Check' in the step summary for missing secrets."
+
       - uses: actions/download-artifact@v4
         id: download-data-streams
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
         with:
           name: deep-audit-data-streams
           path: deep-audit-data-streams
 
       - name: Locate findings.json
         id: findings
+        if: steps.provider-gate.outputs.has_effective_targets == 'true'
         run: |
           set -euo pipefail
           f="$(find "$GITHUB_WORKSPACE/deep-audit-data-streams" -name findings.json -type f | head -n 1)"
