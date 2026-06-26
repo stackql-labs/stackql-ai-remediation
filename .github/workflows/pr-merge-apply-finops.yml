@@ -8,8 +8,7 @@ name: Apply FinOps Remediation on merge (static creds)
 # directories are git-moved from remediations/proposed/ to
 # remediations/applied/ to leave an audit trail and prevent re-application.
 #
-# Mutation credentials are read from SANDBOX_* repo secrets, populated
-# via cicd/scripts/replicate_to_gh_secrets.sh.
+# Mutation uses per-provider OIDC mutate identities from repo secrets.
 
 on:
   push:
@@ -30,14 +29,6 @@ concurrency:
 
 jobs:
   apply:
-    env:
-      GOOGLE_CREDENTIALS:   ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
-      AZURE_TENANT_ID:      ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
-      AWS_ACCESS_KEY_ID:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,19 +72,80 @@ jobs:
           printf '%s\n' "${rem[@]}" > "$RUNNER_TEMP/remediation-files.txt"
           printf '::notice::will apply: %s\n' "${rem[@]}"
 
+          # Determine which providers are actually present in this run's findings.
+          want_aws=false
+          want_gcp=false
+          want_azure=false
+          for r in "${rem[@]}"; do
+            f="$(dirname "$r")/finding.json"
+            [ -f "$f" ] || continue
+            provider="$(jq -r '.provider // empty' "$f")"
+            if [ -z "$provider" ]; then
+              target="$(jq -r '.target // empty' "$f")"
+              provider="${target#finops-}"
+            fi
+            case "$provider" in
+              aws) want_aws=true ;;
+              gcp) want_gcp=true ;;
+              azure) want_azure=true ;;
+            esac
+          done
+
+          requested_targets=""
+          if [ "$want_aws" = "true" ]; then requested_targets="${requested_targets} finops-aws"; fi
+          if [ "$want_gcp" = "true" ]; then requested_targets="${requested_targets} finops-gcp"; fi
+          if [ "$want_azure" = "true" ]; then requested_targets="${requested_targets} finops-azure"; fi
+          requested_targets="${requested_targets# }"
+
+          # Fallback protects legacy/odd finding shapes where provider cannot be inferred.
+          if [ -z "$requested_targets" ]; then
+            requested_targets="finops-aws finops-gcp finops-azure"
+            echo "::warning::could not infer providers from finding.json; falling back to checking all providers"
+          fi
+
+          echo "requested_targets=$requested_targets" >> "$GITHUB_OUTPUT"
+          echo "::notice::provider check scope: $requested_targets"
+
       - name: Check provider prerequisites
         if: steps.detect.outputs.found == 'true'
         id: provider-gate
         env:
-          REQUESTED_TARGETS: finops-aws finops-gcp finops-azure
-          SANDBOX_AWS_ACCESS_KEY_ID: ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-          SANDBOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
-          SANDBOX_GOOGLE_CREDENTIALS: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
-          SANDBOX_AZURE_TENANT_ID: ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
-          SANDBOX_AZURE_CLIENT_ID: ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
-          SANDBOX_AZURE_CLIENT_SECRET: ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
-          SANDBOX_AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
-        run: bash cicd/scripts/provider_gate.sh sandbox
+          REQUESTED_TARGETS: ${{ steps.detect.outputs.requested_targets }}
+          STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN: ${{ secrets.STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN }}
+          STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT: ${{ secrets.STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT }}
+          STACKQL_ID_FED_AZURE_TENANT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID: ${{ secrets.STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID }}
+          AZURE_SUB_ID: ${{ secrets.AZURE_SUB_ID }}
+        run: bash cicd/scripts/provider_gate.sh oidc-mutate
+
+      - name: Configure AWS creds (OIDC mutate)
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.aws_enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Configure GCP creds (OIDC mutate)
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.gcp_enabled == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Install gcloud
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.gcp_enabled == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Azure creds (OIDC mutate)
+        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.azure_enabled == 'true'
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.STACKQL_ID_FED_AZURE_TENANT_ID }}
+          client-id: ${{ secrets.STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUB_ID }}
+          allow-no-subscriptions: true
 
       - name: All providers skipped
         if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets != 'true'
@@ -116,6 +168,15 @@ jobs:
           curl -fsSL https://releases.stackql.io/stackql/latest/stackql_linux_amd64.zip -o /tmp/stackql.zip
           unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
           stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
+
+          if [ "$GCP_ENABLED" = "true" ]; then
+            export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+          fi
+          if [ "$AZURE_ENABLED" = "true" ]; then
+            export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+            export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
+          fi
+          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
 
 
           fail=0
@@ -155,7 +216,7 @@ jobs:
 
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
-            out="$(stackql exec --output json "$q" 2>&1)"
+            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
             rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
             if [ "${rows:-0}" -gt 0 ]; then
               echo "::group::PASS $f ($rows row)"
@@ -174,38 +235,7 @@ jobs:
             exit 1
           fi
 
-      # --- mutation credentials (static, SANDBOX_*) ---------------------
-      # - name: Configure AWS creds (static, SANDBOX)
-      #   if: steps.detect.outputs.found == 'true'
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     aws-access-key-id:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-      #     aws-secret-access-key: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
-      #     aws-region:            us-east-1
-
-      # - name: Configure GCP creds (static, SANDBOX)
-      #   if: steps.detect.outputs.found == 'true'
-      #   uses: google-github-actions/auth@v2
-      #   with:
-      #     credentials_json: ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
-
-      - name: Install gcloud
-        if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
-        uses: google-github-actions/setup-gcloud@v2
-
-      # - name: Configure Azure creds (static, SANDBOX)
-      #   if: steps.detect.outputs.found == 'true'
-      #   uses: azure/login@v2
-      #   with:
-      #     creds: |
-      #       {
-      #         "clientId":       "${{ secrets.SANDBOX_AZURE_CLIENT_ID }}",
-      #         "clientSecret":   "${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}",
-      #         "tenantId":       "${{ secrets.SANDBOX_AZURE_TENANT_ID }}",
-      #         "subscriptionId": "${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}"
-      #       }
-
-      # --- install stackql (mutating creds set by the SANDBOX auth steps) ---
+      # --- install stackql ----------------------------------------------------
       - name: Install stackql + providers
         if: steps.detect.outputs.found == 'true' && steps.provider-gate.outputs.has_effective_targets == 'true'
         run: |
@@ -235,17 +265,17 @@ jobs:
           AWS_RESTORE: ${{ steps.provider-gate.outputs.aws_restore }}
           GCP_RESTORE: ${{ steps.provider-gate.outputs.gcp_restore }}
           AZURE_RESTORE: ${{ steps.provider-gate.outputs.azure_restore }}
-          # SANDBOX static creds — stackql picks AWS up from env automatically,
-          # GCP from the application-default credentials file, Azure from SP env.
-          GOOGLE_CREDENTIALS:   ${{ secrets.SANDBOX_GOOGLE_CREDENTIALS }}
-          AZURE_TENANT_ID:      ${{ secrets.SANDBOX_AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID:      ${{ secrets.SANDBOX_AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET:  ${{ secrets.SANDBOX_AZURE_CLIENT_SECRET }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.SANDBOX_AZURE_SUBSCRIPTION_ID }}
-          AWS_ACCESS_KEY_ID:     ${{ secrets.SANDBOX_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SANDBOX_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -uo pipefail
+
+          if [ "$GCP_ENABLED" = "true" ]; then
+            export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+          fi
+          if [ "$AZURE_ENABLED" = "true" ]; then
+            export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+            export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
+          fi
+          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
 
           : > "$RESULTS_JSON.tmp"
           applied=0
@@ -314,7 +344,7 @@ jobs:
 
             echo "::group::$check_id $dir"
             echo "QUERY : $sql"
-            stackql exec --output json "$sql" >"$stdout_log" 2>"$stderr_log"
+            stackql exec --auth "$AUTH" --output json "$sql" >"$stdout_log" 2>"$stderr_log"
             rc=$?
             echo "EXIT  : $rc"
             echo "STDOUT: $(cat "$stdout_log")"
@@ -397,6 +427,15 @@ jobs:
           unzip -q /tmp/stackql.zip -d /usr/local/bin && chmod +x /usr/local/bin/stackql
           stackql exec "registry pull aws;     registry pull google;     registry pull azure;     registry pull entra_id;"
 
+          if [ "$GCP_ENABLED" = "true" ]; then
+            export GCP_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+          fi
+          if [ "$AZURE_ENABLED" = "true" ]; then
+            export AZURE_ARM_TOKEN="$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)"
+            export AZURE_GRAPH_TOKEN="$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)"
+          fi
+          AUTH='{"google":{"type":"bearer","credentialsenvvar":"GCP_ACCESS_TOKEN"},"azure":{"type":"bearer","credentialsenvvar":"AZURE_ARM_TOKEN"},"entra_id":{"type":"bearer","credentialsenvvar":"AZURE_GRAPH_TOKEN"}}'
+
           fail=0
           skipped=0
           while IFS= read -r r; do
@@ -434,7 +473,7 @@ jobs:
 
             q="$(jq -r '.suggested_remediation.preflight_query // empty' "$f")"
             [ -n "$q" ] || { echo "::warning::$f no preflight_query"; continue; }
-            out="$(stackql exec --output json "$q" 2>&1)"
+            out="$(stackql exec --auth "$AUTH" --output json "$q" 2>&1)"
             rows="$(echo "$out" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)"
             # Post-apply: mutation happened pre-merge; resource should be gone.
             if [ "${rows:-0}" -eq 0 ]; then

@@ -90,13 +90,18 @@ case "$MODE" in
     check_provider gcp STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER STACKQL_ID_FED_GCP_SERVICE_ACCOUNT
     check_provider azure STACKQL_ID_FED_AZURE_TENANT_ID STACKQL_ID_FED_AZURE_CLIENT_ID AZURE_SUB_ID
     ;;
+  oidc-mutate)
+    check_provider aws STACKQL_ID_FED_AWS_MUTATE_ROLE_ARN
+    check_provider gcp STACKQL_ID_FED_GCP_WORKLOAD_IDENTITY_PROVIDER STACKQL_ID_FED_GCP_MUTATE_SERVICE_ACCOUNT
+    check_provider azure STACKQL_ID_FED_AZURE_TENANT_ID STACKQL_ID_FED_AZURE_MUTATE_CLIENT_ID AZURE_SUB_ID
+    ;;
   sandbox)
     check_provider aws SANDBOX_AWS_ACCESS_KEY_ID SANDBOX_AWS_SECRET_ACCESS_KEY
     check_provider gcp SANDBOX_GOOGLE_CREDENTIALS
     check_provider azure SANDBOX_AZURE_TENANT_ID SANDBOX_AZURE_CLIENT_ID SANDBOX_AZURE_CLIENT_SECRET SANDBOX_AZURE_SUBSCRIPTION_ID
     ;;
   *)
-    echo "error: unsupported mode '$MODE' (use 'oidc' or 'sandbox')" >&2
+    echo "error: unsupported mode '$MODE' (use 'oidc', 'oidc-mutate', or 'sandbox')" >&2
     exit 1
     ;;
 esac
