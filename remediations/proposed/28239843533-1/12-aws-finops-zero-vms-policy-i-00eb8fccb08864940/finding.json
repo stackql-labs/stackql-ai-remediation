@@ -1,0 +1,28 @@
+{
+  "run_id": "28239843533",
+  "target": "finops-aws",
+  "provider": "aws",
+  "check_id": "aws-finops-zero-vms-policy",
+  "check_file": "finops-aws/zero-vms-policy.yaml",
+  "check_name": "Active EC2 instance (zero-VMs policy)",
+  "query": "SELECT instanceId, instanceType, instanceState, placement\nFROM aws.ec2_native.instances\nWHERE region = 'ap-southeast-2'",
+  "severity": "HIGH",
+  "category": null,
+  "kind": null,
+  "region": "ap-southeast-2",
+  "suggested_remediation": {
+    "type": "manual",
+    "tool": null,
+    "preflight_query": null,
+    "sql_query": null,
+    "command": null,
+    "description": "Terminate the instance.\nstackql: DELETE FROM aws.ec2_native.instances WHERE region = '<region>' AND data__Identifier = '<instanceId>';"
+  },
+  "fields": {
+    "instanceId": "i-00eb8fccb08864940",
+    "instanceState": "",
+    "instanceType": "t3.micro",
+    "placement": "\n                        ap-southeast-2b\n                        apse2-az1\n                        \n                        default\n                    ",
+    "region": "ap-southeast-2"
+  }
+}
